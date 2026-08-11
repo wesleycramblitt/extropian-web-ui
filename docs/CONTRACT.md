@@ -1,0 +1,865 @@
+# Extropian Web UI — Visual Scene Document → Interactive DOM
+
+> **v0.3 (implemented):** Types aligned with the unified SceneDocument schema
+> defined in `extropian-semantic-to-visual/compiler/docs/compiler-plan.md` §12.
+> TypeScript types in `src/types.ts` mirror the canonical C++ structs.
+> New modules: `spaceResolver`, `billboardHandler`, `presentationEngine`,
+> `convertVisualDocToSceneDocument`, `components/image`.
+> Legacy `Visual`/`VisualDoc` types retained as `@deprecated`.
+>
+> AI-emitted declarative JSON → interactive DOM.
+> One contract, two backends (TypeScript DOM + C++ OpenGL), shared JSON fixtures.
+
+---
+
+## 1. Overview
+
+**`extropian-web-ui`** is a zero-framework TypeScript library. An AI (or human) emits a single JSON object describing *what* to visualize — equations, charts, matrices, graphs, forms, tables — and `render()` draws it to the DOM using KaTeX (math), d3 (charts, force graphs), and vanilla CSS. There is no WebGL, no class-based builder API, no manual DOM manipulation.
+
+Two formats share the same `render()` entry point:
+
+| Format | Purpose |
+|--------|---------|
+| **`Visual`** (flat) | Quick single-panel document. A discriminated union of 11 `kind` values. |
+| **`VisualDoc`** (full) | Reactive document with canonical `state`, computed `derive`, layout tree, semantic metadata, controls, relations, focus tracking, and presentation annotations. |
+
+`render()` returns a `View` handle with `.on()`, `.find()`, `.update()`, `.updateDocument()`, `.getState()`, `.setState()`, `.setFocus()`, `.getFocus()`, `.unmount()`.
+
+### Installation
+
+```bash
+cd extropian-web-ui && npm install
+cd extropian-composer-web && npm install
+cd extropian-composer-web && npm run dev   # → http://localhost:3000
+```
+
+### Quick start
+
+```ts
+import { render, injectBaseStyles } from 'extropian-web-ui';
+
+injectBaseStyles();
+
+const view = render({
+  kind: 'panel',
+  title: 'Hello',
+  children: [
+    { kind: 'math', source: '\\nabla \\cdot \\mathbf{u} = 0' },
+    { kind: 'chart', type: 'line', series: [{ y: [1, 3, 2, 5, 4] }] },
+  ],
+}, document.body);
+
+view.on('*', (payload) => console.log('action:', payload));
+view.on('button:submit', (data) => fetch('/api', { body: JSON.stringify(data) }));
+```
+
+---
+
+## 2. The two document formats
+
+### 2.1 Flat `Visual` (backward compatible)
+
+A single discriminated union. One container kind (`panel`) nests other kinds.
+
+```ts
+type Visual =
+  | Panel | Text | ViewRef | Math | Chart | Matrix
+  | Table | Graph | Form | Button | Custom;
+```
+
+Every kind inherits from `NodeBase`:
+
+```ts
+interface NodeBase {
+  id?: string;
+  style?: Record<string, string | number>;   // pass-through CSS
+  action?: string;                            // declarative event name
+  semantic?: Semantic;                        // meaning, not appearance
+  interaction?: string[];                     // hover, select, drag, focus, inspect
+}
+```
+
+**All kinds at a glance:**
+
+| Kind | Key properties | Renders with |
+|------|---------------|-------------|
+| `panel` | `layout: 'row'\|'column'\|'grid'`, `cols?`, `title?`, `children: Visual[]` | CSS flex/grid |
+| `text` | `text: string`, `variant?: 'heading'\|'body'\|'code'\|'label'` | `<h2>` / `<div>` / `<pre>` |
+| `math` | `source: string` (LaTeX), `display?: boolean` | KaTeX (lazy-loaded) |
+| `chart` | `type: 'line'\|'scatter'\|'bar'\|'area'\|'heatmap'`, `series?`, `matrix?`, labels | d3 SVG (lazy-loaded) |
+| `matrix` | `values: (number\|string)[][]`, `rowLabels?`, `colLabels?`, `editable?` | HTML `<table>` |
+| `table` | `columns?: string[]`, `rows: (string\|number)[][]` | HTML `<table>` |
+| `graph` | `nodes: GraphNode[]`, `edges: GraphEdge[]` | d3-force + SVG (lazy-loaded) |
+| `form` | `fields: Field[]` (number, text, complex, select, boolean, range) | HTML inputs |
+| `button` | `label: string` | HTML `<button>` |
+| `custom` | `type: string`, `props?: unknown` | `registerRenderer(type, fn)` |
+| `view_ref` | `view: string` | Placeholder; resolved by layout tree |
+
+### 2.2 Full `VisualDoc` (reactive)
+
+```ts
+interface VisualDoc {
+  version?: number;
+  topic?: string;
+
+  state?: Record<string, unknown>;       // canonical mutable values
+  derive?: Record<string, string>;       // expressions: "matmul(A,v)", "eigen(A)"
+  layout?: Layout;                        // layout tree referencing view ids
+  views?: ViewDef[];                      // semantic view definitions
+  controls?: Control[];                   // interactive controls bound to state
+  relations?: Relation[];                 // semantic links between entities
+  presentation?: PresentationState;       // highlights, isolation, annotations
+
+  root?: Visual;                          // backward compat: flat root
+}
+```
+
+When `VisualDoc` is rendered:
+
+1. `state` is cloned as the canonical state.
+2. `derive` expressions are evaluated (topological-like iteration, up to 10 passes) into a `derived` map. State + derived together form the reactive scope.
+3. `resolveRefs()` walks the entire document tree (`views`, `layout`, `objects`, `controls`), replacing every `"$name"` string and numeric field with its resolved state/derived value.
+4. The layout tree is rendered: string references resolve to view IDs, each view's `objects: Visual[]` are rendered as Visual nodes.
+5. `PresentationState` is applied (highlights, isolation dimming, annotation callouts).
+
+---
+
+## 3. The reactive state engine (`state.ts`)
+
+### Expression grammar
+
+Supports function calls, arithmetic, bracket indexing, and dot access:
+
+```
+expr    → term (('+' | '-') term)*
+term    → factor (('*' | '/') factor)*
+factor  → primary ('^' primary)*
+primary → number | string | funcall | ref | '(' expr ')'
+funcall → ident '(' args ')'
+args    → expr (',' expr)*
+ref     → '$' ident ('.' ident | '[' expr ']')*
+```
+
+### Built-in functions
+
+| Function | Signature | Notes |
+|----------|-----------|-------|
+| `matmul(A, B)` | `number[][] × number[][]` | Matrix multiplication |
+| `eigen(A)` | `number[][] → { values, vectors }` | 2×2 eigenvalues (closed-form) |
+| `det(A)` | `number[][] → number` | 2×2 determinant |
+| `trace(A)` | `number[][] → number` | Sum of diagonal entries |
+| `transpose(A)` | `number[][] → number[][]` | Matrix transpose |
+| `sin(x)`, `cos(x)`, `tan(x)` | `number → number` | Trigonometric |
+| `sqrt(x)`, `abs(x)`, `exp(x)`, `log(x)` | `number → number` | Math functions |
+| `norm(v)` | `number[] → number` | Vector norm |
+| `dot(u, v)` | `number[] × number[] → number` | Dot product |
+| `identity(n)` | `number → number[][]` | Identity matrix |
+
+### $ref resolution
+
+Any string value starting with `$` is interpreted as an expression:
+
+- `"$A"` → `state.A`
+- `"$eig.values"` → `derived.eig.values`
+- `"$eig.vectors[0]"` → `derived.eig.vectors[0]`
+- `"$A[0][0] + 1"` → `state.A[0][0] + 1`
+
+Resolution is deep: every value in the document tree (including nested objects, arrays, chart series, form defaults, control values) is scanned.
+
+### Example
+
+```json
+{
+  "state": { "A": [[2, 0], [0, 0.5]], "v": [0.8, 0.6] },
+  "derive": { "Av": "matmul(A,v)", "eig": "eigen(A)" },
+  "views": [{
+    "id": "info",
+    "objects": [
+      { "kind": "text", "text": "$eig.values[0]" },
+      { "kind": "math", "source": "\\lambda = $eig.values[0]" }
+    ]
+  }]
+}
+```
+
+The text is rendered as `2` (the first eigenvalue). The math receives `\lambda = 2`.
+
+---
+
+## 4. Layout tree (`layout.ts`)
+
+Independent of the Visual tree. References views by string ID.
+
+```ts
+type Layout =
+  | { type: 'split'; direction: 'horizontal'|'vertical'; ratio?: number[]; children: (string | Layout)[] }
+  | { type: 'stack' | 'row' | 'column'; children: (string | Layout)[] }
+  | { type: 'grid'; cols?: number; children: (string | Layout)[] }
+  | { type: 'tabs'; tabs: { label: string; content: string | Layout }[] }
+  | { type: 'overlay'; base: string | Layout;
+      overlays: { id: string; position: 'top-right'|'top-left'|'bottom-right'|'bottom-left'; content: string | Layout }[] }
+  | string;  // view id reference
+```
+
+### Layout rendering
+
+| Type | Implementation |
+|------|---------------|
+| `split` | CSS flex with border separators, `flex` ratio |
+| `stack` / `row` / `column` | CSS flex, column gets `width:100%`, row gets `flex:1 1 0` |
+| `grid` | CSS grid, `grid-template-columns: repeat(cols, 1fr)` |
+| `tabs` | Button bar + show/hide content panels, active tab tracking |
+| `overlay` | Relative container + absolute-positioned children, `z-index: 10` |
+| `string` | Resolves to a view ID, calls renderer with view's `objects` |
+
+### Example: split layout
+
+```json
+{
+  "layout": {
+    "type": "split",
+    "direction": "horizontal",
+    "ratio": [2, 1],
+    "children": ["main_view", "info_panel"]
+  },
+  "views": [
+    { "id": "main_view", "type": "cartesian2d", "objects": [{ "kind": "chart", ... }] },
+    { "id": "info_panel", "objects": [{ "kind": "matrix", ... }, { "kind": "math", ... }] }
+  ]
+}
+```
+
+---
+
+## 5. Semantic metadata
+
+```ts
+interface Semantic {
+  role?: string;          // "eigenvector", "matrix", "transformation"
+  concept?: string;       // "direction preserved by transformation"
+  represents?: string;    // "first eigenvector of A"
+  value?: string;         // "$eig.vectors[0]" (ref, not literal)
+  units?: string;
+  importance?: 'primary' | 'secondary' | 'detail';
+  explanation?: string;   // human-readable tooltip
+  related?: string[];     // entity ids
+  source?: string;
+  category?: string;
+}
+```
+
+Every `NodeBase` (all Visual kinds, GraphNode, Field, ViewDef) accepts an optional `semantic` field. The renderer:
+
+- Sets `data-semantic-role` attribute on the DOM element
+- Sets the HTML `title` attribute to the `explanation` / `concept` / `represents` value
+- Marks focusable elements as `tabindex="0"` if `interaction` includes `focus` or `select`
+
+The playground displays focus/semantic info in a floating panel when you click any entity.
+
+---
+
+## 6. View handle API
+
+`render(spec, container)` returns:
+
+```ts
+interface View {
+  root: HTMLElement;
+
+  // Event subscription
+  on(action: string, handler: (payload: unknown) => void): () => void;
+
+  // Element lookup by id
+  find(id: string): HTMLElement | null;
+
+  // Flat Visual update (full re-render)
+  update(visual: Visual): void;
+
+  // Full document update (re-resolves state, re-renders layout)
+  updateDocument(doc: VisualDoc): void;
+
+  // Reactive state
+  getState(): Record<string, unknown>;
+  setState(path: string, value: unknown): void;
+
+  // Focus / selection
+  getFocus(): FocusState;
+  setFocus(focus: Partial<FocusState>): void;
+
+  // Cleanup
+  unmount(): void;
+}
+```
+
+`on('*', handler)` subscribes to all action events (wildcard).
+
+`setState("A[0][0]", 3)` re-evaluates derived values, re-resolves all `$ref`s, and re-renders the entire document.
+
+---
+
+## 7. Focus & selection
+
+```ts
+interface FocusState {
+  view?: string;        // active view id
+  entity?: string;      // focused entity id
+  selection?: string[]; // multi-select
+  hover?: string;       // hovered entity
+  path?: string[];      // breadcrumb path
+}
+```
+
+The playground listens for clicks on `[data-exd-id]` elements and calls `view.setFocus({ entity: id })`. This:
+- Highlights the element with a blue outline (1.5s animation)
+- Updates the floating focus display (top-right of screen)
+- Shows the state panel (bottom-right, computed state/derived values)
+
+---
+
+## 8. Presentation state
+
+```ts
+interface PresentationState {
+  highlights?: string[];       // entity ids to highlight (blue glow)
+  isolation?: string[];        // entities to isolate (others dim to 15% opacity)
+  annotations?: Annotation[];  // temporary callout labels
+}
+
+interface Annotation {
+  target: string;              // entity id
+  content: string;             // annotation text
+  position?: 'top' | 'bottom' | 'left' | 'right';
+}
+```
+
+Applied after document render. Annotations are absolutely positioned relative to the viewport container. Isolation uses CSS `opacity: 0.15` with transition.
+
+---
+
+## 9. AI mutation contract (types defined)
+
+```ts
+type Mutation =
+  | { op: 'set'; path: string; value: unknown }
+  | { op: 'increment'; path: string; delta?: number }
+  | { op: 'reset'; path?: string }
+  | { op: 'highlight' | 'emphasize' | 'deemphasize' | 'isolate' | 'select' | 'focus' | 'reveal'; target: string }
+  | { op: 'annotate'; target: string; content: string; position?: string }
+  | { op: 'show_equation'; target: string; content: string }
+  | { op: 'animate'; target: string; animation: string }
+  | { op: 'play' } | { op: 'pause' } | { op: 'seek'; time: number }
+  | { op: 'add_view'; view: ViewDef }
+  | { op: 'remove_view'; id: string }
+  | { op: 'add_object' | 'remove_object'; target: string; ... };
+
+interface AIResponse {
+  answer?: string;
+  mutations?: Mutation[];
+}
+```
+
+Mutations are **not yet applied by the runtime** — the types and discriminator exist so an AI can emit them; the apply-mutation engine is the next implementation step.
+
+---
+
+## 10. Controls (types defined)
+
+```ts
+type Control =
+  | { type: 'slider'; id: string; bind: string; min?; max?; step? }
+  | { type: 'number_input'; id: string; bind: string; ... }
+  | { type: 'range_slider' | 'toggle' | 'checkbox' | 'radio' | 'select' }
+  | { type: 'button' | 'button_group' }
+  | { type: 'matrix_editor'; value?: number[][] }
+  | { type: 'play_pause' | 'step_forward' | 'step_backward' | 'scrubber' | 'reset' }
+  | { type: 'drag_point' | 'visibility_toggle' | 'tabs' }
+```
+
+Controls are bound to state paths via `bind: string`. Control rendering is deferred.
+
+---
+
+## 11. Relations (types defined)
+
+```ts
+interface Relation {
+  from: string;
+  to: string;
+  type: 'depends_on' | 'derived_from' | 'transforms' | 'maps_to' | 'contains' |
+        'part_of' | 'causes' | 'controls' | 'corresponds_to' | 'scaled_by' |
+        'computed_by' | 'flows_to' | 'reads_from' | 'writes_to' | 'related_to' |
+        'eigenvector_of' | 'output_of' | 'input_to';
+  label?: string;
+}
+```
+
+Declared at the document root. Used by future context resolution (what entities to include when the user asks about a focused entity). Not yet rendered.
+
+---
+
+## 12. Extensibility
+
+### Custom renderers
+
+```ts
+import { registerRenderer } from 'extropian-web-ui';
+
+registerRenderer('mermaid', (props, ctx) => {
+  const el = document.createElement('div');
+  Mermaid.render(props.code, el);
+  return el;
+});
+
+// Usage:
+const doc = { kind: 'custom', type: 'mermaid', props: { code: 'graph TD; A→B;' } };
+```
+
+### Renderer context
+
+```ts
+interface RendererContext {
+  render(v: Visual): HTMLElement;    // recurse into child nodes
+  emit(action: string, payload: unknown): void;  // fire declarative event
+  focus(entityId: string, isSelection?: boolean): void;
+  getFocus(): FocusState;
+  getState(): Record<string, unknown>;
+}
+```
+
+---
+
+## 13. Dependencies
+
+| Library | Usage | Load strategy |
+|---------|-------|--------------|
+| `katex` | Math rendering | `import('katex')` on first math node |
+| `d3-scale`, `d3-shape`, `d3-axis` | Charts (line, scatter, bar, area, heatmap) | `Promise.all([...])` on first chart |
+| `d3-force`, `d3-selection`, `d3-zoom` | Force-directed graph | `Promise.all([...])` on first graph |
+| None | Panels, text, matrices, tables, forms, buttons | Native DOM |
+
+All lazy-loaded. CSS for KaTeX is loaded via CDN `<link>` on first math render.
+
+---
+
+## 14. Architecture diagram
+
+```
+extropian-web-ui/src/
+│
+├── types.ts          ← Visual, VisualDoc, Layout, Semantic, Control, Mutation, View
+├── state.ts          ← expression parser, $ref resolver, derived evaluator
+├── layout.ts         ← Layout → DOM (split, stack, tabs, overlay, grid, row, column)
+├── render.ts         ← render(), ViewImpl, action dispatch, focus, state mutations
+├── styles.ts         ← dark theme CSS injection
+├── index.ts          ← public API exports
+│
+└── components/
+    ├── panel.ts      ← flex/grid container
+    ├── text.ts       ← heading/body/code/label
+    ├── math.ts       ← KaTeX (lazy)
+    ├── chart.ts      ← d3: line/scatter/bar/area/heatmap (lazy)
+    ├── matrix.ts     ← HTML table with headers
+    ├── table.ts      ← data table
+    ├── graph.ts      ← d3-force + SVG connectors (lazy)
+    ├── form.ts       ← number/text/complex/select/boolean/range
+    ├── button.ts     ← action-emitter
+    └── view_ref.ts   ← layout placeholder
+```
+
+---
+
+## 15. Playground (extropian-composer-web)
+
+Live at `http://localhost:3000`. Features:
+
+- Left pane: JSON editor with syntax-highlighted textarea
+- Right pane: rendered output
+- Ctrl+Enter to render
+- Preset dropdown: 10 example documents covering all formats and kinds
+- Focus display: click any entity to see its id, semantic role, and explanation
+- State panel: shows resolved `state` + `derived` values (bottom-right)
+- Events counter: counts declarative `action` fires (footer bar)
+- Error bar: parse/render errors shown inline below the editor
+
+### Presets
+
+| Preset | Format | Highlights |
+|--------|--------|-----------|
+| Eigenvalues (full doc) | VisualDoc | state + derive + split layout + semantic + annotations |
+| State + Cartesian2D | VisualDoc | state + derive + row layout + chart showing A·unit_circle |
+| Dashboard + Tabs | VisualDoc | tabs layout with equation view + chart view |
+| Navier–Stokes | Visual | math display-mode equations |
+| Line Chart | Visual | d3 line chart with 2 series |
+| Scatter Plot | Visual | d3 scatter with Re vs Cd |
+| Heatmap | Visual | d3 color-scale heatmap |
+| Force Graph | Visual | d3-force draggable nodes |
+| Form + Complex Input | Visual | all field types incl. complex number |
+| Correlation Matrix | Visual | labeled matrix table |
+
+---
+
+## 16. Repository structure
+
+```
+~/code/
+├── extropian-web-ui/       # Library — npm package
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── vite.config.ts
+│   └── src/                # (as shown in §14)
+│
+└── extropian-composer-web/ # App — playground consumer
+    ├── package.json        # depends on extropian-web-ui via path alias
+    ├── vite.config.ts      # alias → ../extropian-web-ui/src/index.ts
+    ├── index.html
+    └── src/
+        ├── main.ts
+        ├── playground.ts
+        └── presets/index.ts
+```
+
+Deprecated GL/WASM files (`src/gl/`, `src/wasm/`, `wasm/`) remain in the repo but are not imported by the new entry.
+
+---
+
+## 17. Current status & next steps
+
+### Implemented
+- Full Visual contract (11 kinds)
+- Full VisualDoc contract (state, derive, layout, views, semantics)
+- Reactive state engine (expression parser, $ref resolution, derived evaluation)
+- Layout tree renderer (split, stack, tabs, overlay, row, column, grid)
+- Semantic metadata rendering (data attributes, tooltips)
+- Focus/selection tracking + UI
+- Presentation state (highlights, isolation, annotations)
+- Playground with focus inspection and state display
+- 10 presets covering both formats
+
+### Types defined, rendering deferred
+- 20 control types (sliders, matrix_editor, play_pause, etc.)
+- 17 relation types
+- AI mutation contract (14 mutation operations)
+- AIResponse envelope
+
+
+## 18. Unified SceneDocument TypeScript Interface (IMPLEMENTED — v0.3)
+
+> **Authoritative type definition:** C++ structs in `extropian-semantic-to-visual/compiler/docs/compiler-plan.md` §12.
+> **Canonical headers** (`include/exd/types/`): not yet created — the `compiler-plan.md` is the spec.
+> **This file:** TypeScript mirror consuming the same JSON format.
+> **When to update:** Whenever the C++ structs change, update `src/types.ts` and re-run shared fixture tests.
+
+### Naming convention note
+
+The C++ types use bare names (`Relation`, `Annotation`, `PresentationState`,
+etc.).  Our TypeScript mirror prefixes them with `Scene` (`SceneRelation`,
+`SceneAnnotation`, `ScenePresentationState`) to avoid collisions with legacy
+`@deprecated` types that share the same names.  JSON wire format is
+unaffected — only TypeScript type names differ.
+
+### ⚠️ Open: SpaceType enum serialization
+
+The C++ `enum class SpaceType` has PascalCase values (`Screen`, `Panel`,
+`Cartesian2D`, `Viewport3D`, `World3D`, `Overlay`).  Our TS mirror uses
+lowercase strings (`'screen'`, `'panel'`, …).  The JSON wire format depends
+on the C++ `NLOHMANN_JSON_SERIALIZE_ENUM` configuration, which is not yet
+specified.  **Confirm with the C++ team before fixture testing.**
+
+The C++ `NodeType` enum (PascalCase: `Panel`, `Text`, …) matches our TS
+PascalCase strings, so that is aligned regardless.
+
+---
+
+### Implemented TypeScript types (mirror of C++ §12.4–§12.6)
+
+```typescript
+// ── Space types ──
+
+export type SpaceType = 'screen' | 'panel' | 'cartesian2d' | 'viewport3d' | 'world3d' | 'overlay';
+
+export interface CameraPose {
+    look_at: [number, number, number];
+    target: [number, number, number];
+    up: [number, number, number];
+}
+
+export interface Camera {
+    projection: 'perspective' | 'orthographic';
+    fov: number;
+    near_plane: number;
+    far_plane: number;
+    pose: CameraPose;
+}
+
+export interface GridHint {
+    visible: boolean;
+    size: number;
+    subdivisions: number;
+}
+
+export interface SpaceLayout {
+    x: string;
+    y: string;
+    width: string;
+    height: string;
+}
+
+export interface Space {
+    id: string;
+    type: SpaceType;
+    parent?: string;
+    layout?: SpaceLayout;
+    projection: 'orthographic' | 'perspective';
+    background: string;
+    camera?: Camera;
+    grid?: GridHint;
+    scroll: boolean;
+}
+
+// ── Node types ──
+
+export type NodeType =
+    | 'Panel' | 'Text' | 'Equation' | 'Matrix' | 'Plot'
+    | 'Vector' | 'Curve' | 'Mesh' | 'Volume' | 'Label'
+    | 'Graph' | 'Code' | 'Image' | 'Viewport' | 'Group'
+    | 'Table' | 'Form' | 'Button';
+
+export interface Transform {
+    position: [number, number, number];
+    rotation: [number, number, number, number];  // quaternion [x,y,z,w]
+    scale: [number, number, number];
+    anchor: string;
+}
+
+export interface Orient {
+    mode: 'fixed' | 'billboard' | 'billboard_y';
+    face: string;
+}
+
+export interface LayoutHint {
+    strategy: 'row' | 'column' | 'grid' | 'absolute' | 'stack' | 'overlay';
+    gap: number;
+    padding: number;
+    alignment: 'start' | 'center' | 'end' | 'stretch';
+    min_width?: number;
+    max_width?: number;
+}
+
+export interface DataBinding {
+    bind: string;
+    path?: string;
+}
+
+export interface NodeSemantic {
+    role: string;
+    concept: string;
+    kind: string;
+    explanation: string;
+    tags: string[];
+}
+
+export interface NodeInteraction {
+    hover: boolean;
+    select: boolean;
+    drag: boolean;
+    focus: boolean;
+    inspect: boolean;
+    edit: boolean;
+}
+
+export interface NodeStyle {
+    emphasis: 'subtle' | 'default' | 'primary' | 'prominent';
+    opacity: number;
+    depth: number;
+    visible: boolean;
+}
+
+export interface SceneNode {
+    id: string;
+    type: NodeType;
+    space: string;
+    transform?: Transform;
+    orient?: Orient;
+    layout?: LayoutHint;
+    geometry: Record<string, unknown>;
+    content: Record<string, unknown>;
+    data?: DataBinding;
+    semantic?: NodeSemantic;
+    interaction: NodeInteraction;
+    style: NodeStyle;
+    children: SceneNode[];
+}
+
+// ── Relations ──
+
+export interface SceneRelationStyle {
+    type: 'arrow' | 'line' | 'tube' | 'bezier' | 'elbow';
+    color: string;
+    width: number;
+    dash: boolean;
+}
+
+export interface SceneRelation {
+    id: string;
+    source: string;
+    target: string;
+    source_port?: string;
+    target_port?: string;
+    style: SceneRelationStyle;
+    label?: { text: string; position: 'start' | 'middle' | 'end' };
+    semantic?: { kind: string };
+}
+
+// ── Presentation state ──
+
+export interface CameraOverride {
+    space: string;
+    pose?: CameraPose;
+}
+
+export interface StyleOverride {
+    emphasis: string;
+    opacity: number;
+}
+
+export interface SceneAnnotation {
+    id: string;
+    target: string;
+    text: string;
+    position: 'above' | 'below' | 'left' | 'right' | 'center';
+    style: 'callout' | 'tooltip' | 'label';
+}
+
+export interface SceneAnimationClip {
+    target: string;
+    effect: 'pulse' | 'highlight' | 'fade_in' | 'fade_out' | 'slide_in' | 'scale_up';
+    duration: number;
+    easing: 'ease_out' | 'ease_in' | 'linear';
+}
+
+export interface ScenePresentationState {
+    focus_entity?: string;
+    selection: string[];
+    camera?: CameraOverride;
+    overrides: Record<string, StyleOverride>;
+    annotations: SceneAnnotation[];
+    animations: SceneAnimationClip[];
+}
+
+// ── Patch ops (AI mutation contract) ──
+
+export interface PatchOp {
+    op: 'isolate' | 'camera_focus' | 'annotate' | 'dim' | 'highlight' | 'reveal' | 'conceal' | 'scrub' | 'sequence' | 'reset';
+    target: string;
+    params: Record<string, unknown>;
+}
+
+export interface PatchDocument {
+    ops: PatchOp[];
+}
+
+// ── Top-level SceneDocument ──
+
+export interface SceneDocument {
+    version: number;
+    topic: string;
+    spaces: Space[];
+    nodes: SceneNode[];
+    relations: SceneRelation[];
+    presentation?: ScenePresentationState;
+    state: Record<string, unknown>;
+    data_sources: Record<string, unknown>;
+}
+```
+
+### Node Type Geometry & Content by Type
+
+Each `SceneNode.type` has specific fields in `geometry` and `content`:
+
+| NodeType | `geometry` fields | `content` fields |
+|----------|------------------|-----------------|
+| `Panel` | `width`, `height`, `minWidth`, `maxWidth`, `cornerRadius`, `background`, `border`, `shadow`, `scroll` | `title`, `collapsible`, `collapsed` |
+| `Text` | `maxWidth`, `lineHeight` | `text`, `variant` (heading/body/code/caption/label), `level`, `syntax` |
+| `Equation` | `display`, `block` | `source` (LaTeX), `label` |
+| `Matrix` | `rows`, `cols`, `cellWidth`, `cellHeight`, `showRowLabels`, `showColLabels`, `rowLabels`, `colLabels` | `value` (number[][]), `editable`, `step` |
+| `Plot` | `chartType` (line/scatter/bar/area/heatmap), `width`, `height`, `xAxis`, `yAxis`, `grid`, `legend` | `series[]` ({name, data, color, lineWidth, marker}) |
+| `Vector` | `origin`, `direction`, `length`, `arrowSize`, `shaftRadius`, `color` | `label`, `labelPosition` |
+| `Curve` | `tRange`, `samples`, `lineWidth`, `color`, `tube` | `parametric` ({x, y, z}) or `points` |
+| `Mesh` | `shape` (sphere/box/cylinder/torus/capsule/cone/plane/custom), `params`, `wireframe`, `opacity` | `label` |
+| `Volume` | `kind` (isosurface/slice/streamlines/pointcloud/glyphs), `resolution`, `domain` | `field`, `isosurface`, `colormap` |
+| `Label` | `fontSize`, `color`, `background`, `maxWidth` | `text`, `alignment` |
+| `Graph` | `layout` (force-directed/tree/radial/layered/flow), `layoutParams`, `nodeRadius`, `edgeStyle` | `nodes[]`, `edges[]` |
+| `Code` | `lineNumbers`, `maxHeight`, `fontSize` | `source`, `language`, `highlightLines` |
+| `Image` | `width`, `height`, `fit` (contain/cover/fill), `cornerRadius` | `src`, `alt`, `caption` |
+| `Viewport` | `width`, `height`, `border` | `controls` (boolean) |
+| `Group` | (none) | `name` |
+| `Table` | `sortable`, `filterable`, `striped`, `maxHeight` | `columns[]`, `rows[]` |
+| `Form` | `layout`, `gap` | `fields[]` ({id, label, type, value, min, max, step, bind}) |
+| `Button` | `variant` (primary/secondary/danger/ghost), `size`, `icon` | `label`, `action` |
+
+### Renderer Mapping (SceneNode.type → Component) — ALL IMPLEMENTED
+
+When `render(sceneDocument)` is called, the engine walks the node tree and
+dispatches to registered renderers:
+
+| NodeType | Renderer | Status |
+|----------|----------|--------|
+| `Panel` | `panel.ts` (via adapter) | ✅ |
+| `Text` | `text.ts` (via adapter) | ✅ |
+| `Equation` | `math.ts` (via adapter) | ✅ |
+| `Matrix` | `matrix.ts` (via adapter) | ✅ |
+| `Plot` | `chart.ts` (via adapter) | ✅ |
+| `Graph` | `graph.ts` (via adapter) | ✅ |
+| `Table` | `table.ts` (via adapter) | ✅ |
+| `Form` | `form.ts` (via adapter) | ✅ |
+| `Button` | `button.ts` (via adapter) | ✅ |
+| `Code` | `text.ts` (code variant) | ✅ |
+| `Image` | `components/image.ts` | ✅ |
+| `Label` | `text.ts` (label variant) | ✅ |
+| `Group` | Pass-through wrapper | ✅ |
+| `Vector` | Placeholder — deferred to v0.2 WASM | ⏳ |
+| `Curve` | Placeholder — deferred to v0.2 WASM | ⏳ |
+| `Mesh` | Placeholder — deferred to v0.2 WASM | ⏳ |
+| `Volume` | Placeholder — deferred to v0.2 WASM | ⏳ |
+| `Viewport` | Placeholder — deferred to v0.2 WASM | ⏳ |
+
+### New Modules Added (v0.3)
+
+| Module | Purpose |
+|--------|---------|
+| `src/spaceResolver.ts` | Maps `node.space` to CSS coordinate transforms. Handles screen/panel/overlay space types, groups nodes by space, creates positioned DOM containers. |
+| `src/billboardHandler.ts` | Handles `node.orient.mode` (fixed/billboard/billboard_y). Stub for 2D DOM; ready for v0.2 WASM 3D. |
+| `src/presentationEngine.ts` | Applies `ScenePresentationState`: focus glow, style overrides (emphasis + opacity), annotations (callout/tooltip/label at all 5 positions), animation clips (pulse/highlight/fade_in/fade_out/slide_in/scale_up). |
+| `src/convertVisualDocToSceneDocument.ts` | Backward compat: legacy `VisualDoc` → unified `SceneDocument`. Handles all 11 Visual kinds, views, relations, and presentation state. |
+| `src/components/image.ts` | Image renderer for `SceneNode{type: 'Image'}`. Handles src, alt, caption, width/height, fit, cornerRadius. |
+
+### Legacy Migration Completed (v0.3)
+
+All old types in `src/types.ts` are marked `@deprecated` and retained for
+backward compatibility:
+
+- ✅ `Visual` discriminated union — marked `@deprecated`
+- ✅ `VisualDoc` interface — marked `@deprecated`
+- ✅ `ViewDef` interface — marked `@deprecated`
+- ✅ `Control` types (20 types) — marked `@deprecated`; concept lives in `SceneNode{type: "Form"}.content.fields[]`
+- ✅ `Layout` tree type — marked `@deprecated`; replaced by `SceneNode.layout.strategy`
+- ✅ `NodeBase` concept — retained, marked `@deprecated`; renamed to `SceneNode` in the unified schema
+- ✅ `Semantic` interface — retained, marked `@deprecated`; renamed to `NodeSemantic`
+- ✅ `PresentationState` — retained, marked `@deprecated`; new fields (camera, animations) in `ScenePresentationState`
+- ✅ `FocusState` — kept as-is (used by both old and new paths)
+- ✅ `Mutation` and `AIResponse` — marked `@deprecated`; replaced by `PatchOp[]` / `PatchDocument`
+- ✅ `RendererContext` and `RendererFn` — kept as-is (used by both paths)
+
+### Public API Additions (v0.3)
+
+```typescript
+// New exports from src/index.ts:
+export { render, registerRenderer, isSceneDocument, renderSceneNode } from './render.js';
+export { resolveSpaces, createSpaceContainer, groupNodesBySpace, getSpaceForNode } from './spaceResolver.js';
+export { applyBillboard, billboardCssClass, billboardTransform } from './billboardHandler.js';
+export { applyPresentationState, clearPresentationState } from './presentationEngine.js';
+export { convertVisualDocToSceneDocument } from './convertVisualDocToSceneDocument.js';
+
+// Render input now accepts SceneDocument:
+export type RenderInput = Visual | VisualDoc | SceneDocument;
+```
