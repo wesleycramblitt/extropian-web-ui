@@ -145,7 +145,7 @@ function baseSemantic(v: { id?: string; semantic?: { role?: string; concept?: st
   if (s.category) tags.push(s.category);
   return {
     role: s.role ?? '',
-    concept: s.concept ?? s.represents ?? '',
+    concept_id: s.concept ?? s.represents ?? '',
     kind: s.role ?? '',
     explanation: s.explanation ?? '',
     tags,
@@ -159,7 +159,7 @@ function convertSemantic(s: { role?: string; concept?: string; represents?: stri
   if (s.category) tags.push(s.category);
   return {
     role: s.role ?? '',
-    concept: s.concept ?? s.represents ?? '',
+    concept_id: s.concept ?? s.represents ?? '',
     kind: s.role ?? '',
     explanation: s.explanation ?? '',
     tags,

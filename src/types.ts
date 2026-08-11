@@ -82,7 +82,8 @@ export interface DataBinding {
 
 export interface NodeSemantic {
   role: string;
-  concept: string;
+  /** Named concept_id (matches C++ — renamed from 'concept' for C++20 keyword conflict) */
+  concept_id: string;
   kind: string;
   explanation: string;
   tags: string[];

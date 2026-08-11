@@ -242,7 +242,21 @@ registerSceneRenderer('Vector', (node, ctx) => renderPlaceholder('Vector')(node)
 registerSceneRenderer('Curve', (node, ctx) => renderPlaceholder('Curve')(node));
 registerSceneRenderer('Mesh', (node, ctx) => renderPlaceholder('Mesh')(node));
 registerSceneRenderer('Volume', (node, ctx) => renderPlaceholder('Volume')(node));
-registerSceneRenderer('Label', (node, ctx) => renderPlaceholder('Label')(node));
+// Label: 2D billboard text — renders same as Text node.
+// Content: { text: string, alignment?: string }
+// Geometry: { fontSize?: number }
+registerSceneRenderer('Label', (node, ctx) => {
+  const content = node.content as Record<string, unknown>;
+  const spec: Text = {
+    kind: 'text',
+    id: node.id,
+    text: String(content.text ?? ''),
+    variant: 'label',
+    semantic: convertNodeSemanticToSemantic(node.semantic),
+    interaction: interactionToLegacy(node.interaction),
+  };
+  return renderText(spec, ctx);
+});
 registerSceneRenderer('Viewport', (node, ctx) => renderPlaceholder('Viewport')(node));
 registerSceneRenderer('Group', (node, ctx) => {
   // Group is a pass-through: render children in a wrapper
@@ -280,7 +294,7 @@ function convertNodeSemanticToSemantic(
   if (!ns) return undefined;
   return {
     role: ns.role,
-    concept: ns.concept,
+    concept: ns.concept_id,
     represents: ns.kind,
     explanation: ns.explanation,
   };
@@ -344,8 +358,8 @@ function applySceneNodeAttrs(el: HTMLElement, node: SceneNode): void {
 
   if (node.semantic) {
     el.setAttribute('data-semantic-role', node.semantic.role);
-    el.setAttribute('data-semantic-concept', node.semantic.concept);
-    el.title = node.semantic.explanation || node.semantic.concept || '';
+    el.setAttribute('data-semantic-concept', node.semantic.concept_id);
+    el.title = node.semantic.explanation || node.semantic.concept_id || '';
   }
 
   if (node.interaction.select || node.interaction.focus || node.interaction.inspect) {
@@ -533,6 +547,11 @@ class ViewImpl implements View {
     this.root = screenEl;
     this._container.appendChild(screenEl);
 
+    // Render relations (edges between nodes)
+    if (doc.relations && doc.relations.length > 0) {
+      renderSceneRelations(doc.relations, this._container);
+    }
+
     // Apply presentation state
     if (doc.presentation) {
       applyPresentationState(this._container, doc.presentation);
@@ -692,6 +711,113 @@ class ViewImpl implements View {
 
 export function render(input: Visual | VisualDoc | SceneDocument, container: HTMLElement): View {
   return new ViewImpl(container, input);
+}
+
+/**
+ * Standalone function to render a SceneDocument directly.
+ * Creates a View that manages lifecycle (unmount, focus, state).
+ */
+export function renderSceneDocument(doc: SceneDocument, container: HTMLElement): View {
+  return new ViewImpl(container, doc);
+}
+
+// ── SceneRelation rendering ─────────────────────────────────────────────────
+
+/**
+ * Render SceneRelations as SVG edges between source and target DOM nodes.
+ * Uses absolute-positioned SVG overlay inside the container.
+ */
+export function renderSceneRelations(
+  relations: import('./types.js').SceneRelation[],
+  container: HTMLElement,
+): void {
+  if (relations.length === 0) return;
+
+  // Create SVG overlay
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'exd-relations-overlay');
+  svg.style.cssText = `
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 5; overflow: visible;
+  `;
+  container.style.position = 'relative';
+  container.appendChild(svg);
+
+  // Create marker definitions
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  defs.innerHTML = `
+    <marker id="exd-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#4a9eff" />
+    </marker>
+    <marker id="exd-arrowhead-dashed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#8080b0" />
+    </marker>
+  `;
+  svg.appendChild(defs);
+
+  for (const rel of relations) {
+    const sourceEl = container.querySelector(`[data-exd-id="${rel.source}"]`) as HTMLElement | null;
+    const targetEl = container.querySelector(`[data-exd-id="${rel.target}"]`) as HTMLElement | null;
+    if (!sourceEl || !targetEl) continue;
+
+    const containerRect = container.getBoundingClientRect();
+    const sRect = sourceEl.getBoundingClientRect();
+    const tRect = targetEl.getBoundingClientRect();
+
+    const x1 = sRect.left + sRect.width / 2 - containerRect.left;
+    const y1 = sRect.top + sRect.height / 2 - containerRect.top;
+    const x2 = tRect.left + tRect.width / 2 - containerRect.left;
+    const y2 = tRect.top + tRect.height / 2 - containerRect.top;
+
+    const color = rel.style.color ?? '#4a9eff';
+    const width = rel.style.width ?? 2;
+    const dash = rel.style.dash ? '8,4' : 'none';
+    const markerEnd = rel.style.type === 'arrow' || rel.style.type === 'line'
+      ? (dash === 'none' ? 'url(#exd-arrowhead)' : 'url(#exd-arrowhead-dashed)')
+      : 'none';
+
+    // Offset endpoints slightly inward to leave room for arrowhead
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 1) continue;
+
+    const inset = 8;
+    const ex1 = x1 + (dx / len) * inset;
+    const ey1 = y1 + (dy / len) * inset;
+    const ex2 = x2 - (dx / len) * inset;
+    const ey2 = y2 - (dy / len) * inset;
+
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', String(ex1));
+    line.setAttribute('y1', String(ey1));
+    line.setAttribute('x2', String(ex2));
+    line.setAttribute('y2', String(ey2));
+    line.setAttribute('stroke', color);
+    line.setAttribute('stroke-width', String(width));
+    line.setAttribute('stroke-dasharray', dash);
+    line.setAttribute('marker-end', markerEnd);
+    line.setAttribute('data-rel-id', rel.id);
+    line.setAttribute('data-rel-source', rel.source);
+    line.setAttribute('data-rel-target', rel.target);
+
+    svg.appendChild(line);
+
+    // Label at midpoint
+    if (rel.label?.text) {
+      const mx = (ex1 + ex2) / 2;
+      const my = (ey1 + ey2) / 2;
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', String(mx));
+      text.setAttribute('y', String(my - 4));
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('fill', '#8080b0');
+      text.setAttribute('font-size', '10');
+      text.setAttribute('font-family', 'Inter, sans-serif');
+      text.textContent = rel.label.text;
+      svg.appendChild(text);
+    }
+  }
 }
 
 // ── Type guard ──────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 export { render, registerRenderer, isSceneDocument, renderSceneNode } from './render.js';
+export { renderSceneDocument, renderSceneRelations } from './render.js';
 export { injectBaseStyles } from './styles.js';
 export { resolveRefs, evaluateDerived, isVisualDoc } from './state.js';
 export { resolveSpaces, createSpaceContainer, groupNodesBySpace, getSpaceForNode } from './spaceResolver.js';
