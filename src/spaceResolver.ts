@@ -1,7 +1,7 @@
 // Maps SceneNode.space references to CSS coordinate transforms.
 // For DOM-based rendering, spaces affect layout (position, size,
 // overflow behavior) rather than actual 3D transforms.
-import type { Space, SpaceLayout, SpaceType, SceneNode } from './types.js';
+import type { Space, SpaceLayout, SpaceType, SceneNode, DiagramLayout } from './types.js';
 
 export interface ResolvedSpace {
   id: string;
@@ -14,6 +14,7 @@ export interface ResolvedSpace {
   cssBackground: string;
   cssOverflow: string;
   children: string[]; // space IDs that are parented to this space
+  arrangement?: DiagramLayout; // child layout algorithm (2D diagrams)
 }
 
 /**
@@ -38,6 +39,7 @@ export function resolveSpaces(spaces: Space[]): Map<string, ResolvedSpace> {
       cssBackground: sp.background,
       cssOverflow: sp.scroll ? 'auto' : 'visible',
       children: [],
+      arrangement: sp.arrangement,
     });
   }
 

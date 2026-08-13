@@ -6,6 +6,9 @@ export { resolveSpaces, createSpaceContainer, groupNodesBySpace, getSpaceForNode
 export { applyBillboard, billboardCssClass, billboardTransform } from './billboardHandler.js';
 export { applyPresentationState, clearPresentationState } from './presentationEngine.js';
 export { convertVisualDocToSceneDocument } from './convertVisualDocToSceneDocument.js';
+export { computeDiagramLayout } from './diagramLayout.js';
+export { createScale, applyEncoding, resolveChannel, lookupPath, resolveChannelValue, SCHEMES } from './scale.js';
+export type { LayoutBox } from './diagramLayout.js';
 
 // ── SceneDocument types (v1.0) ──────────────────────────────────────────────
 export type {
@@ -14,6 +17,8 @@ export type {
   Space, SpaceType, SpaceLayout, Camera, CameraPose, GridHint,
   NodeType, Transform, Orient, LayoutHint, DataBinding,
   NodeSemantic, NodeInteraction, NodeStyle, NodeDimensions,
+  ShapeType, Port, ScaleType, ScaleDef, ChannelSpec, Encoding,
+  LayoutAlgorithm, DiagramLayout,
   CameraOverride, StyleOverride, PatchOp, PatchDocument,
 } from './types.js';
 

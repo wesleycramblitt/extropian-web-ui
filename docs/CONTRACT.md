@@ -700,6 +700,7 @@ export interface Space {
     camera?: Camera;
     grid?: GridHint;
     scroll: boolean;
+    arrangement?: DiagramLayout;   // how children are laid out (2D diagrams)
 }
 
 // ── Node types ──
@@ -708,7 +709,7 @@ export type NodeType =
     | 'Panel' | 'Text' | 'Equation' | 'Matrix' | 'Plot'
     | 'Vector' | 'Curve' | 'Mesh' | 'Volume' | 'Label'
     | 'Graph' | 'Code' | 'Image' | 'Viewport' | 'Group'
-    | 'Table' | 'Form' | 'Button';
+    | 'Table' | 'Form' | 'Button' | 'Shape';
 
 export interface Transform {
     position: [number, number, number];
@@ -790,6 +791,8 @@ export interface SceneNode {
     content: Record<string, unknown>;
     data?: DataBinding;
     semantic?: NodeSemantic;
+    encode?: Encoding;            // visual encoding: metric → channel
+    ports?: Port[];               // connection points for edge routing
     interaction: NodeInteraction;
     style: NodeStyle;
     children: SceneNode[];
@@ -880,8 +883,79 @@ export interface SceneDocument {
     presentation?: ScenePresentationState;
     state: Record<string, unknown>;
     data_sources: Record<string, unknown>;
+    scales?: ScaleDef[];          // shared visual scales (metric → channel)
 }
 ```
+
+### Diagram primitives — shapes, ports, encoding, layout (v1.1)
+
+The diagram vocabulary for building interactive 2D diagrams (architecture,
+dataflow, neural networks, codebase maps, …). These are the new contract
+primitives layered on top of the existing node/relation model:
+
+```typescript
+export type ShapeType =
+    | 'Rect' | 'RoundedRect' | 'Circle' | 'Ellipse' | 'Diamond'
+    | 'Hexagon' | 'Parallelogram' | 'Triangle' | 'Pill' | 'Cylinder'
+    | 'Stack' | 'Grid' | 'Strip' | 'Document';
+
+export interface Port {
+    id: string;
+    side: 'north' | 'east' | 'south' | 'west';
+    position: number;            // 0..1 along the side (0 = left/top)
+}
+
+export type ScaleType = 'linear' | 'log' | 'sqrt' | 'threshold' | 'quantize' | 'ordinal';
+
+export interface ScaleDef {
+    id: string;
+    type: ScaleType;
+    scheme: string;              // viridis | magma | inferno | plasma | blues | diverging | category10 | category20
+    domain: unknown;             // [min,max] or [category,...]
+    range: unknown;              // [min,max] (size) or [color,...]
+}
+
+export interface ChannelSpec {
+    source: string;              // data path, e.g. "metrics.code_size"
+    scale?: string;              // id of a ScaleDef in SceneDocument.scales
+}
+
+export interface Encoding {
+    size?: ChannelSpec;
+    color?: ChannelSpec;
+    opacity?: ChannelSpec;
+    shape?: ChannelSpec;
+    label?: ChannelSpec;
+    edge_width?: ChannelSpec;
+}
+
+export type LayoutAlgorithm =
+    | 'manual' | 'grid' | 'layered' | 'tree' | 'radial'
+    | 'force' | 'treemap' | 'pack' | 'swimlane' | 'timeline';
+
+export interface DiagramLayout {
+    algorithm: LayoutAlgorithm;
+    size_by?: ChannelSpec;       // treemap/pack: channel driving area
+    color_by?: ChannelSpec;
+    params: Record<string, unknown>;   // orientation, rankdir, gap, ...
+}
+```
+
+Semantics:
+
+- `SceneNode.type = 'Shape'` renders a geometric primitive; `geometry.shape`
+  picks the `ShapeType` (see table below).
+- `SceneNode.encode` binds metrics to visual channels through shared
+  `scales[]` — e.g. "code size → box area, complexity → color" — so a single
+  scale gives one consistent meaning + legend across the whole document.
+- `SceneNode.ports` + `SceneRelation.source_port`/`target_port` anchor edges to
+  node sides instead of centers.
+- `Space.arrangement` positions child nodes. All ten algorithms are implemented:
+  `manual`, `grid`, `layered` (Sugiyama-style ranks), `tree`, `radial`, `force`
+  (d3-force, sync ticks), `treemap` (squarified), `pack` (d3 circle packing),
+  `swimlane` (`lane_by`), and `timeline` (`time_by`). `tree`/`radial` flatten
+  nested `children` into absolutely-positioned nodes; the rest lay out the
+  space's top-level nodes.
 
 ### Node Type Geometry & Content by Type
 
@@ -907,6 +981,7 @@ Each `SceneNode.type` has specific fields in `geometry` and `content`:
 | `Table` | `sortable`, `filterable`, `striped`, `maxHeight` | `columns[]`, `rows[]` |
 | `Form` | `layout`, `gap` | `fields[]` ({id, label, type, value, min, max, step, bind}) |
 | `Button` | `variant` (primary/secondary/danger/ghost), `size`, `icon` | `label`, `action` |
+| `Shape` | `shape` (ShapeType), `width`, `height`, `cornerRadius`, `fill`, `stroke`, `strokeWidth`, `rows`/`cols` (Grid), `count` (Stack/Strip) | `label`, `labelPosition` |
 
 ### Renderer Mapping (SceneNode.type → Component) — ALL IMPLEMENTED
 
@@ -924,12 +999,13 @@ dispatches to registered renderers:
 | `Table` | `table.ts` (via adapter) | ✅ |
 | `Form` | `form.ts` (via adapter) | ✅ |
 | `Button` | `button.ts` (via adapter) | ✅ |
+| `Shape` | `components/shape.ts` (SVG geometry) | ✅ |
 | `Code` | `text.ts` (code variant) | ✅ |
 | `Image` | `components/image.ts` | ✅ |
 | `Label` | `text.ts` (label variant) | ✅ |
 | `Group` | Pass-through wrapper | ✅ |
-| `Vector` | Placeholder — deferred to v0.2 WASM | ⏳ |
-| `Curve` | Placeholder — deferred to v0.2 WASM | ⏳ |
+| `Vector` | `components/geometry2d.ts` (2D SVG arrow) | ✅ |
+| `Curve` | `components/geometry2d.ts` (2D SVG polyline) | ✅ |
 | `Mesh` | Placeholder — deferred to v0.2 WASM | ⏳ |
 | `Volume` | Placeholder — deferred to v0.2 WASM | ⏳ |
 | `Viewport` | Placeholder — deferred to v0.2 WASM | ⏳ |

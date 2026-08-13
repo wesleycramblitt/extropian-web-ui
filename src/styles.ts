@@ -70,6 +70,9 @@ const CSS = `
   .exd-graph-node text { fill: #e0e0e0; font-size: 11px; font-family: 'Inter', sans-serif; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
   .exd-graph-edge { stroke: #3a3a6a; stroke-width: 1.5; fill: none; }
 
+  .exd-shape { box-sizing: border-box; overflow: visible; }
+  .exd-shape svg { display: block; width: 100%; height: 100%; }
+
   .exd-form { display: flex; flex-direction: column; gap: 10px; }
   .exd-form-field { display: flex; flex-direction: column; gap: 4px; }
   .exd-form-field-row { display: flex; align-items: center; gap: 8px; }

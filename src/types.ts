@@ -49,6 +49,78 @@ export interface Space {
   camera?: Camera;
   grid?: GridHint;
   scroll: boolean;
+  /** How child nodes are arranged (layered/tree/treemap/pack/…); 2D diagrams. */
+  arrangement?: DiagramLayout;
+}
+
+// ── Diagram primitives — shapes, ports, encoding, layout ─────────────────────
+
+/** 2D geometric shape vocabulary (used by `SceneNode{type:'Shape'}`). */
+export type ShapeType =
+  | 'Rect' | 'RoundedRect' | 'Circle' | 'Ellipse' | 'Diamond'
+  | 'Hexagon' | 'Parallelogram' | 'Triangle' | 'Pill' | 'Cylinder'
+  | 'Stack' | 'Grid' | 'Strip' | 'Document';
+
+/** Connection point on a node, for edge routing. */
+export interface Port {
+  id: string;
+  side: 'north' | 'east' | 'south' | 'west';
+  /** 0..1 along the side (0 = left/top). */
+  position: number;
+}
+
+export type ScaleType = 'linear' | 'log' | 'sqrt' | 'threshold' | 'quantize' | 'ordinal';
+
+/**
+ * A named scale mapping a metric domain to a visual range. Shared across nodes
+ * so "color = complexity" stays consistent and legend-able.
+ */
+export interface ScaleDef {
+  id: string;
+  type: ScaleType;
+  /** Color scheme: `viridis | magma | inferno | plasma | blues | diverging | category10 | category20` (empty = none). */
+  scheme: string;
+  /** `[min,max]` or `[category,...]`. */
+  domain: unknown;
+  /** `[min,max]` (size/opacity) or `[color,...]`; optional. */
+  range: unknown;
+}
+
+/** Binds one visual channel to a data field, scaled by a named `ScaleDef`. */
+export interface ChannelSpec {
+  /** Data path, e.g. `"metrics.code_size"`. */
+  source: string;
+  /** id of a `ScaleDef` in `SceneDocument.scales`. */
+  scale?: string;
+}
+
+/** Per-node visual encoding: metric → visual channel. */
+export interface Encoding {
+  size?: ChannelSpec;
+  color?: ChannelSpec;
+  opacity?: ChannelSpec;
+  shape?: ChannelSpec;
+  label?: ChannelSpec;
+  edge_width?: ChannelSpec;
+}
+
+export type LayoutAlgorithm =
+  | 'manual' | 'grid' | 'layered' | 'tree' | 'radial'
+  | 'force' | 'treemap' | 'pack' | 'swimlane' | 'timeline';
+
+/** Container-level layout: how a space arranges its child nodes. */
+export interface DiagramLayout {
+  algorithm: LayoutAlgorithm;
+  /** treemap/pack: channel driving area. */
+  size_by?: ChannelSpec;
+  /** Optional channel driving child color. */
+  color_by?: ChannelSpec;
+  /** swimlane: channel grouping nodes into lanes. */
+  lane_by?: ChannelSpec;
+  /** timeline: channel positioning nodes on the time axis. */
+  time_by?: ChannelSpec;
+  /** Algorithm-specific params: orientation, rankdir, gap, cols, node_width, … */
+  params: Record<string, unknown>;
 }
 
 // ── Node types ──────────────────────────────────────────────────────────────
@@ -57,7 +129,7 @@ export type NodeType =
   | 'Panel' | 'Text' | 'Equation' | 'Matrix' | 'Plot'
   | 'Vector' | 'Curve' | 'Mesh' | 'Volume' | 'Label'
   | 'Graph' | 'Code' | 'Image' | 'Viewport' | 'Group'
-  | 'Table' | 'Form' | 'Button';
+  | 'Table' | 'Form' | 'Button' | 'Shape';
 
 // ── 2D vs 3D dimensionality (table-driven — single source of truth) ─────────
 //
@@ -95,6 +167,7 @@ export const NODE_DIMENSIONS: Record<NodeType, NodeDimensions> = {
   Form: '2d',
   Button: '2d',
   Image: '2d',
+  Shape: '2d',
   Label: 'both',
   Vector: 'both',
   Curve: 'both',
@@ -171,6 +244,10 @@ export interface SceneNode {
   content: Record<string, unknown>;
   data?: DataBinding;
   semantic?: NodeSemantic;
+  /** Visual encoding: metric → channel (size/color/shape/…). */
+  encode?: Encoding;
+  /** Connection points for edge routing. Omitted = no ports. */
+  ports?: Port[];
   interaction: NodeInteraction;
   style: NodeStyle;
   children: SceneNode[];
@@ -258,6 +335,8 @@ export interface SceneDocument {
   state: Record<string, unknown>;
   /** Named data sources referenced by `DataBinding.bind`. */
   data_sources: Record<string, unknown>;
+  /** Shared visual scales referenced by `Encoding`/`ChannelSpec.scale`. */
+  scales?: ScaleDef[];
 }
 
 // ── Focus & selection ───────────────────────────────────────────────────────

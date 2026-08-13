@@ -1,7 +1,7 @@
 import type {
   Visual, SceneNode, SceneDocument, View, ViewDef, VisualDoc,
   ResolvedDoc, ResolvedView, RendererContext, RendererFn, FocusState, Layout,
-  NodeBase, Custom, NodeType,
+  NodeBase, Custom, NodeType, ScaleDef, Port,
 } from './types.js';
 import { NODE_DIMENSIONS, SPACE_DIMENSIONS } from './types.js';
 import { resolveRefs, evaluateDerived, isVisualDoc } from './state.js';
@@ -9,6 +9,9 @@ import { renderLayout } from './layout.js';
 import { resolveSpaces, createSpaceContainer, groupNodesBySpace } from './spaceResolver.js';
 import { applyBillboard } from './billboardHandler.js';
 import { applyPresentationState, clearPresentationState } from './presentationEngine.js';
+import { applyEncoding, resolveChannel } from './scale.js';
+import { computeDiagramLayout, type LayoutBox } from './diagramLayout.js';
+import { resolvePortAnchor, edgePath } from './edgeRouting.js';
 import { convertVisualDocToSceneDocument } from './convertVisualDocToSceneDocument.js';
 
 // ── Renderer registry ──────────────────────────────────────────────────────
@@ -32,6 +35,7 @@ import { renderButton } from './components/button.js';
 import { renderViewRef } from './components/view_ref.js';
 import { renderImage } from './components/image.js';
 import { renderVector2D, renderCurve2D } from './components/geometry2d.js';
+import { renderShape } from './components/shape.js';
 
 registerRenderer('panel', renderPanel as RendererFn);
 registerRenderer('text', renderText as RendererFn);
@@ -58,22 +62,30 @@ function registerSceneRenderer(
   sceneRendererRegistry.set(nodeType, fn);
 }
 
-// Map unified NodeType → existing component renderers via adapters
+// Map unified NodeType → existing component renderers via adapters.
+// Panel renders its children directly as SceneNodes (via renderSceneNode) so
+// every child type — including Shape, Image, Vector, Curve — renders correctly.
 registerSceneRenderer('Panel', (node, ctx) => {
   const layoutHint = node.layout;
   const strategy = layoutHint?.strategy ?? 'column';
-  const panelSpec: Panel = {
-    kind: 'panel',
-    id: node.id,
-    layout: (strategy === 'grid') ? 'grid' : (strategy as 'row' | 'column'),
-    cols: strategy === 'grid' ? 2 : undefined,
-    title: String(node.content.title ?? ''),
-    children: node.children.map(c => convertSceneNodeToVisual(c)),
-    semantic: convertNodeSemanticToSemantic(node.semantic),
-    interaction: interactionToLegacy(node.interaction),
-    style: node.style && node.style.visible ? {} : { opacity: node.style.opacity },
-  };
-  return renderPanel(panelSpec, ctx);
+  const el = document.createElement('div');
+  el.className = `exd-panel exd-panel-${strategy === 'grid' ? 'grid' : strategy === 'row' ? 'row' : 'column'}`;
+  if (strategy === 'grid') {
+    const cols = Number((node.geometry as Record<string, unknown>).cols ?? 2);
+    el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    el.style.display = 'grid';
+  }
+  const title = String((node.content as Record<string, unknown>).title ?? '');
+  if (title) {
+    const t = document.createElement('div');
+    t.className = 'exd-panel-title';
+    t.textContent = title;
+    el.appendChild(t);
+  }
+  for (const child of node.children) {
+    el.appendChild(renderSceneNode(child, ctx));
+  }
+  return el;
 });
 
 registerSceneRenderer('Text', (node, ctx) => {
@@ -250,6 +262,9 @@ registerSceneRenderer('Viewport', (node) => render3DPlaceholder('Viewport'));
 registerSceneRenderer('Vector', (node, ctx) => renderVector2D(node, ctx));
 registerSceneRenderer('Curve', (node, ctx) => renderCurve2D(node, ctx));
 
+// Shape: 2D geometric primitive (see components/shape.ts).
+registerSceneRenderer('Shape', (node, ctx) => renderShape(node, ctx));
+
 // Label: 2D text (billboard text in 3D).
 // Content: { text: string, alignment?: string }
 // Geometry: { fontSize?: number }
@@ -276,24 +291,6 @@ registerSceneRenderer('Group', (node, ctx) => {
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-function convertSceneNodeToVisual(node: SceneNode): Visual {
-  const content = node.content as Record<string, unknown>;
-  switch (node.type) {
-    case 'Panel': return { kind: 'panel', title: String(content.title ?? ''), children: node.children.map(c => convertSceneNodeToVisual(c)) };
-    case 'Text': return { kind: 'text', text: String(content.text ?? ''), variant: (content.variant as any) ?? 'body' };
-    case 'Code': return { kind: 'text', text: String(content.source ?? ''), variant: 'code' };
-    case 'Equation': return { kind: 'math', source: String(content.source ?? '') };
-    case 'Plot': return { kind: 'chart', type: 'line', series: [] };
-    case 'Matrix': return { kind: 'matrix', values: (content.value ?? [[]]) as (number | string)[][] };
-    case 'Table': return { kind: 'table', rows: (content.rows ?? []) as (string | number)[][] };
-    case 'Graph': return { kind: 'graph', nodes: [], edges: [] };
-    case 'Form': return { kind: 'form', fields: [] };
-    case 'Button': return { kind: 'button', label: String(content.label ?? '') };
-    case 'Image': return { kind: 'text', text: '[Image]', variant: 'label' };
-    default: return { kind: 'text', text: `[${node.type}]`, variant: 'label' };
-  }
-}
 
 function convertNodeSemanticToSemantic(
   ns: import('./types.js').NodeSemantic | undefined,
@@ -376,6 +373,11 @@ function collectNodeDependencies(node: SceneNode): string[] {
   visit(node.content);
   visit(node.geometry);
   if (node.data?.bind) keys.add(refTopKey(node.data.bind));
+  if (node.encode) {
+    for (const ch of [node.encode.size, node.encode.color, node.encode.opacity, node.encode.shape, node.encode.label, node.encode.edge_width]) {
+      if (ch) keys.add(refTopKey(ch.source));
+    }
+  }
   return [...keys];
 }
 
@@ -387,6 +389,13 @@ function findSceneNodeById(nodes: SceneNode[], id: string): SceneNode | null {
     if (found) return found;
   }
   return null;
+}
+
+/** Parse a CSS dimension string ("600", "600px", "50%") to a number, or fallback. */
+function parseDim(v: string | undefined, fallback: number): number {
+  if (!v) return fallback;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 // ── SceneNode render dispatcher ─────────────────────────────────────────────
@@ -446,6 +455,11 @@ function applySceneNodeAttrs(el: HTMLElement, node: SceneNode): void {
     el.title = node.semantic.explanation || node.semantic.concept_id || '';
   }
 
+  // Expose declared ports for relation anchoring (edge routing).
+  if (node.ports && node.ports.length > 0) {
+    el.setAttribute('data-ports', JSON.stringify(node.ports));
+  }
+
   if (node.interaction.select || node.interaction.focus || node.interaction.inspect) {
     el.style.cursor = 'pointer';
     el.tabIndex = 0;
@@ -480,6 +494,8 @@ class ViewImpl implements View {
   private _focus: FocusState = {};
   /** Reactive dependency map: top-level state key → set of node ids that reference it. */
   private _deps = new Map<string, Set<string>>();
+  /** Named visual scales from SceneDocument.scales (for encoding resolution). */
+  private _scales = new Map<string, ScaleDef>();
 
   constructor(container: HTMLElement, input: Visual | VisualDoc | SceneDocument) {
     this._container = container;
@@ -602,6 +618,11 @@ class ViewImpl implements View {
 
   // ── Internal: SceneDocument rendering ────────────────────────────────────
 
+  /** Merged data scope: state (canonical) with data_sources shadowing it. */
+  private _bindingScope(): Record<string, unknown> {
+    return { ...this._state, ...(this._sceneDoc?.data_sources ?? {}) };
+  }
+
   /**
    * Return the document's nodes with all `$ref` strings resolved against the
    * current state. The original document is left untouched (deep-cloned first)
@@ -611,14 +632,11 @@ class ViewImpl implements View {
     if (!this._sceneDoc) return [];
     const nodes = structuredClone(this._sceneDoc.nodes) as SceneNode[];
 
-    // DataBinding scope: data_sources take precedence, state is the fallback.
-    const bindingScope: Record<string, unknown> = {
-      ...this._state,
-      ...this._sceneDoc.data_sources,
-    };
+    const bindingScope = this._bindingScope();
 
     const visit = (n: SceneNode): void => {
       applyDataBinding(n, bindingScope);
+      applyEncoding(n, this._scales, bindingScope);
       n.children.forEach(visit);
     };
     nodes.forEach(visit);
@@ -633,11 +651,9 @@ class ViewImpl implements View {
    */
   private _resolveSingleNode(node: SceneNode): SceneNode {
     const clone = structuredClone(node) as SceneNode;
-    const bindingScope: Record<string, unknown> = {
-      ...this._state,
-      ...(this._sceneDoc?.data_sources ?? {}),
-    };
+    const bindingScope = this._bindingScope();
     applyDataBinding(clone, bindingScope);
+    applyEncoding(clone, this._scales, bindingScope);
     return resolveRefs(clone, this._state, {}) as unknown as SceneNode;
   }
 
@@ -669,6 +685,11 @@ class ViewImpl implements View {
     this._deps = deps;
   }
 
+  /** Rebuild the named visual scale registry from SceneDocument.scales. */
+  private _rebuildScales(): void {
+    this._scales = new Map((this._sceneDoc?.scales ?? []).map(s => [s.id, s]));
+  }
+
   private _renderSceneDocument(): void {
     if (!this._sceneDoc) return;
     const doc = this._sceneDoc;
@@ -677,6 +698,7 @@ class ViewImpl implements View {
 
     // Recompute the reactive dependency map (used by targeted setState updates).
     this._rebuildDependencies();
+    this._rebuildScales();
 
     // Resolve spaces
     const spaces = resolveSpaces(doc.spaces);
@@ -725,8 +747,61 @@ class ViewImpl implements View {
         continue;
       }
 
-      for (const node of nodes) {
-        spaceEl.appendChild(renderSceneNode(node, ctx));
+      // Apply container arrangement (grid/treemap/layered/…), or fall back to
+      // flow layout when no arrangement is specified.
+      if (space.arrangement) {
+        const arrangement = space.arrangement;
+        const area = {
+          width: parseDim(space.cssWidth, 800),
+          height: parseDim(space.cssHeight, 600),
+        };
+        const boxes = computeDiagramLayout(arrangement, nodes, this._bindingScope(), this._scales, area, doc.relations);
+        const colorBy = arrangement.color_by;
+
+        spaceEl.style.position = 'relative';
+        spaceEl.style.width = `${area.width}px`;
+        spaceEl.style.height = `${area.height}px`;
+        spaceEl.style.overflow = 'visible';
+
+        const applyColor = (n: SceneNode): void => {
+          if (colorBy) {
+            const color = resolveChannel(colorBy, this._bindingScope(), this._scales, n.id);
+            if (typeof color === 'string') (n.geometry as Record<string, unknown>).fill = color;
+          }
+        };
+        const place = (el: HTMLElement, box: LayoutBox | undefined): void => {
+          if (!box) return;
+          el.style.position = 'absolute';
+          el.style.left = `${box.x}px`;
+          el.style.top = `${box.y}px`;
+          el.style.width = `${box.width}px`;
+          el.style.height = `${box.height}px`;
+          el.style.boxSizing = 'border-box';
+        };
+
+        if (arrangement.algorithm === 'tree' || arrangement.algorithm === 'radial') {
+          // Hierarchy layouts position the whole subtree — flatten-render it
+          // (each node shallowly, children placed by the layout, not inline).
+          const renderFlat = (n: SceneNode): void => {
+            applyColor(n);
+            const el = renderSceneNode({ ...n, children: [] }, ctx);
+            place(el, boxes.get(n.id));
+            spaceEl.appendChild(el);
+            for (const child of n.children) renderFlat(child);
+          };
+          for (const node of nodes) renderFlat(node);
+        } else {
+          for (const node of nodes) {
+            applyColor(node);
+            const el = renderSceneNode(node, ctx);
+            place(el, boxes.get(node.id));
+            spaceEl.appendChild(el);
+          }
+        }
+      } else {
+        for (const node of nodes) {
+          spaceEl.appendChild(renderSceneNode(node, ctx));
+        }
       }
       screenEl.appendChild(spaceEl);
     }
@@ -949,52 +1024,40 @@ export function renderSceneRelations(
     if (!sourceEl || !targetEl) continue;
 
     const containerRect = container.getBoundingClientRect();
-    const sRect = sourceEl.getBoundingClientRect();
-    const tRect = targetEl.getBoundingClientRect();
+    const sAnchor = resolvePortAnchor(sourceEl.getBoundingClientRect(), rel.source_port, parsePorts(sourceEl.getAttribute('data-ports')));
+    const tAnchor = resolvePortAnchor(targetEl.getBoundingClientRect(), rel.target_port, parsePorts(targetEl.getAttribute('data-ports')));
 
-    const x1 = sRect.left + sRect.width / 2 - containerRect.left;
-    const y1 = sRect.top + sRect.height / 2 - containerRect.top;
-    const x2 = tRect.left + tRect.width / 2 - containerRect.left;
-    const y2 = tRect.top + tRect.height / 2 - containerRect.top;
+    const x1 = sAnchor.x - containerRect.left;
+    const y1 = sAnchor.y - containerRect.top;
+    const x2 = tAnchor.x - containerRect.left;
+    const y2 = tAnchor.y - containerRect.top;
 
+    const type = rel.style.type ?? 'arrow';
     const color = rel.style.color ?? '#4a9eff';
     const width = rel.style.width ?? 2;
     const dash = rel.style.dash ? '8,4' : 'none';
-    const markerEnd = rel.style.type === 'arrow' || rel.style.type === 'line'
-      ? (dash === 'none' ? 'url(#exd-arrowhead)' : 'url(#exd-arrowhead-dashed)')
-      : 'none';
+    const isArrow = type === 'arrow' || type === 'line';
+    const markerEnd = isArrow ? (dash === 'none' ? 'url(#exd-arrowhead)' : 'url(#exd-arrowhead-dashed)') : 'none';
 
-    // Offset endpoints slightly inward to leave room for arrowhead
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 1) continue;
+    if (Math.hypot(x2 - x1, y2 - y1) < 1) continue;
 
-    const inset = 8;
-    const ex1 = x1 + (dx / len) * inset;
-    const ey1 = y1 + (dy / len) * inset;
-    const ex2 = x2 - (dx / len) * inset;
-    const ey2 = y2 - (dy / len) * inset;
-
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', String(ex1));
-    line.setAttribute('y1', String(ey1));
-    line.setAttribute('x2', String(ex2));
-    line.setAttribute('y2', String(ey2));
-    line.setAttribute('stroke', color);
-    line.setAttribute('stroke-width', String(width));
-    line.setAttribute('stroke-dasharray', dash);
-    line.setAttribute('marker-end', markerEnd);
-    line.setAttribute('data-rel-id', rel.id);
-    line.setAttribute('data-rel-source', rel.source);
-    line.setAttribute('data-rel-target', rel.target);
-
-    svg.appendChild(line);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', edgePath(x1, y1, x2, y2, type));
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', String(type === 'tube' ? width * 2 : width));
+    path.setAttribute('stroke-dasharray', dash);
+    if (type === 'tube') path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('marker-end', markerEnd);
+    path.setAttribute('data-rel-id', rel.id);
+    path.setAttribute('data-rel-source', rel.source);
+    path.setAttribute('data-rel-target', rel.target);
+    svg.appendChild(path);
 
     // Label at midpoint
     if (rel.label?.text) {
-      const mx = (ex1 + ex2) / 2;
-      const my = (ey1 + ey2) / 2;
+      const mx = (x1 + x2) / 2;
+      const my = (y1 + y2) / 2;
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       text.setAttribute('x', String(mx));
       text.setAttribute('y', String(my - 4));
@@ -1005,6 +1068,17 @@ export function renderSceneRelations(
       text.textContent = rel.label.text;
       svg.appendChild(text);
     }
+  }
+}
+
+/** Parse the `data-ports` attribute (JSON) back into a Port list. */
+function parsePorts(attr: string | null): Port[] {
+  if (!attr) return [];
+  try {
+    const v = JSON.parse(attr);
+    return Array.isArray(v) ? (v as Port[]) : [];
+  } catch {
+    return [];
   }
 }
 
