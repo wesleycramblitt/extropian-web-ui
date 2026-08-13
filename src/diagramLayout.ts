@@ -119,20 +119,21 @@ function layeredLayout(nodes: SceneNode[], relations: SceneRelation[], area: { w
   if (nodes.length === 0) return out;
   const ids = new Set(nodes.map(n => n.id));
   const adj = new Map<string, string[]>();
+  const pred = new Map<string, string[]>();
   const indeg = new Map<string, number>();
-  for (const n of nodes) { adj.set(n.id, []); indeg.set(n.id, 0); }
+  for (const n of nodes) { adj.set(n.id, []); pred.set(n.id, []); indeg.set(n.id, 0); }
   for (const r of relations) {
     if (ids.has(r.source) && ids.has(r.target) && r.source !== r.target) {
       adj.get(r.source)!.push(r.target);
+      pred.get(r.target)!.push(r.source);
       indeg.set(r.target, (indeg.get(r.target) ?? 0) + 1);
     }
   }
   // longest-path rank assignment (Kahn topological order)
   const rank = new Map<string, number>();
-  const queue = nodes.filter(n => (indeg.get(n.id) ?? 0) === 0).map(n => n.id);
   const indegCopy = new Map(indeg);
   const topo: string[] = [];
-  const q = [...queue];
+  const q = nodes.filter(n => (indeg.get(n.id) ?? 0) === 0).map(n => n.id);
   while (q.length) {
     const id = q.shift()!;
     topo.push(id);
@@ -153,12 +154,32 @@ function layeredLayout(nodes: SceneNode[], relations: SceneRelation[], area: { w
     if (!rankGroups.has(r)) rankGroups.set(r, []);
     rankGroups.get(r)!.push(n.id);
   }
+  const ranks = [...rankGroups.entries()].sort((a, b) => a[0] - b[0]);
+
+  // Barycenter ordering (reduce edge crossings): order each rank by the
+  // average index of its parents in the previous rank.
+  const ordered = new Map<number, string[]>();
+  for (const [r, idsInRank] of ranks) {
+    if (r === 0) { ordered.set(0, idsInRank); continue; }
+    const prev = ordered.get(r - 1) ?? [];
+    const posInPrev = new Map(prev.map((id, i) => [id, i] as const));
+    const scored = idsInRank.map(id => {
+      const positions = (pred.get(id) ?? [])
+        .map(p => posInPrev.get(p))
+        .filter((x): x is number => x !== undefined);
+      const avg = positions.length ? positions.reduce((a, b) => a + b, 0) / positions.length : idsInRank.length;
+      return { id, avg };
+    });
+    scored.sort((a, b) => a.avg - b.avg);
+    ordered.set(r, scored.map(s => s.id));
+  }
+
   const params = layout.params as Record<string, unknown>;
   const rankdir = str(params.rankdir, 'TB');
   const gap = num(params.gap, 24);
   const nodeW = num(params.node_width, 140);
   const nodeH = num(params.node_height, 50);
-  for (const [r, idsInRank] of [...rankGroups.entries()].sort((a, b) => a[0] - b[0])) {
+  for (const [r, idsInRank] of ordered) {
     const count = idsInRank.length;
     idsInRank.forEach((id, i) => {
       if (rankdir === 'LR') {

@@ -73,6 +73,18 @@ const CSS = `
   .exd-shape { box-sizing: border-box; overflow: visible; }
   .exd-shape svg { display: block; width: 100%; height: 100%; }
 
+  .exd-legend { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 6px; max-width: 240px; box-sizing: border-box; }
+  .exd-legend-title { font-size: 12px; font-weight: 600; color: #a0a0c0; }
+  .exd-legend-missing { font-size: 11px; color: #8080b0; font-family: 'JetBrains Mono', monospace; }
+  .exd-legend-ramp { height: 10px; border-radius: 3px; width: 100%; }
+  .exd-legend-ramp-labels { display: flex; justify-content: space-between; font-size: 10px; color: #8080b0; }
+  .exd-legend-swatches { display: flex; flex-direction: column; gap: 3px; }
+  .exd-legend-swatch { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #d0d0d0; }
+  .exd-legend-swatch-color { width: 12px; height: 12px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+  .exd-legend-sizes { display: flex; align-items: flex-end; gap: 10px; padding: 6px 0; }
+  .exd-legend-size-item { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: #8080b0; }
+  .exd-legend-size-circle { display: inline-block; border-radius: 50%; background: #4a9eff; }
+
   .exd-form { display: flex; flex-direction: column; gap: 10px; }
   .exd-form-field { display: flex; flex-direction: column; gap: 4px; }
   .exd-form-field-row { display: flex; align-items: center; gap: 8px; }

@@ -170,3 +170,30 @@ describe('Extended diagram layouts', () => {
     expect(boxes.get('a')!.x).toBeLessThan(boxes.get('b')!.x);
   });
 });
+
+describe('Legend', () => {
+  it('renders a color ramp for a continuous scale', () => {
+    const doc = baseDoc();
+    doc.scales = [{ id: 'complexity', type: 'linear', scheme: 'viridis', domain: [0, 100], range: [] }];
+    doc.nodes.push(node({ id: 'legend', type: 'Legend', content: { scale: 'complexity', title: 'Complexity' } }));
+    const view = render(doc, container());
+    const el = view.find('legend')!;
+    expect(el.querySelector('.exd-legend-title')!.textContent).toBe('Complexity');
+    expect(el.querySelector('.exd-legend-ramp')).toBeTruthy();
+  });
+
+  it('renders swatches for an ordinal scale', () => {
+    const doc = baseDoc();
+    doc.scales = [{ id: 'cat', type: 'ordinal', scheme: 'category10', domain: ['a', 'b', 'c'], range: [] }];
+    doc.nodes.push(node({ id: 'legend', type: 'Legend', content: { scale: 'cat' } }));
+    const view = render(doc, container());
+    expect(view.find('legend')!.querySelectorAll('.exd-legend-swatch').length).toBe(3);
+  });
+
+  it('shows a fallback for an unknown scale', () => {
+    const doc = baseDoc();
+    doc.nodes.push(node({ id: 'legend', type: 'Legend', content: { scale: 'nope' } }));
+    const view = render(doc, container());
+    expect(view.find('legend')!.querySelector('.exd-legend-missing')).toBeTruthy();
+  });
+});

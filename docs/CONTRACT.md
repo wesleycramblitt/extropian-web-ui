@@ -709,7 +709,7 @@ export type NodeType =
     | 'Panel' | 'Text' | 'Equation' | 'Matrix' | 'Plot'
     | 'Vector' | 'Curve' | 'Mesh' | 'Volume' | 'Label'
     | 'Graph' | 'Code' | 'Image' | 'Viewport' | 'Group'
-    | 'Table' | 'Form' | 'Button' | 'Shape';
+    | 'Table' | 'Form' | 'Button' | 'Shape' | 'Legend';
 
 export interface Transform {
     position: [number, number, number];
@@ -982,6 +982,7 @@ Each `SceneNode.type` has specific fields in `geometry` and `content`:
 | `Form` | `layout`, `gap` | `fields[]` ({id, label, type, value, min, max, step, bind}) |
 | `Button` | `variant` (primary/secondary/danger/ghost), `size`, `icon` | `label`, `action` |
 | `Shape` | `shape` (ShapeType), `width`, `height`, `cornerRadius`, `fill`, `stroke`, `strokeWidth`, `rows`/`cols` (Grid), `count` (Stack/Strip) | `label`, `labelPosition` |
+| `Legend` | (none) | `scale` (ScaleDef id), `title` |
 
 ### Renderer Mapping (SceneNode.type → Component) — ALL IMPLEMENTED
 
@@ -1000,6 +1001,7 @@ dispatches to registered renderers:
 | `Form` | `form.ts` (via adapter) | ✅ |
 | `Button` | `button.ts` (via adapter) | ✅ |
 | `Shape` | `components/shape.ts` (SVG geometry) | ✅ |
+| `Legend` | `components/legend.ts` (scale ramp/swatches/sizes) | ✅ |
 | `Code` | `text.ts` (code variant) | ✅ |
 | `Image` | `components/image.ts` | ✅ |
 | `Label` | `text.ts` (label variant) | ✅ |

@@ -36,6 +36,7 @@ import { renderViewRef } from './components/view_ref.js';
 import { renderImage } from './components/image.js';
 import { renderVector2D, renderCurve2D } from './components/geometry2d.js';
 import { renderShape } from './components/shape.js';
+import { renderLegend } from './components/legend.js';
 
 registerRenderer('panel', renderPanel as RendererFn);
 registerRenderer('text', renderText as RendererFn);
@@ -264,6 +265,9 @@ registerSceneRenderer('Curve', (node, ctx) => renderCurve2D(node, ctx));
 
 // Shape: 2D geometric primitive (see components/shape.ts).
 registerSceneRenderer('Shape', (node, ctx) => renderShape(node, ctx));
+
+// Legend: visual scale display (see components/legend.ts).
+registerSceneRenderer('Legend', (node, ctx) => renderLegend(node, ctx));
 
 // Label: 2D text (billboard text in 3D).
 // Content: { text: string, alignment?: string }
@@ -966,6 +970,7 @@ class ViewImpl implements View {
       getFocus: () => ({ ...self._focus }),
       getState: () => ({ ...self._state, ...self._derived }),
       setState(path: string, value: unknown) { self.setState(path, value); },
+      getScales: () => self._scales,
     };
   }
 }

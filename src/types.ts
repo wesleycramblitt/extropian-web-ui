@@ -129,7 +129,7 @@ export type NodeType =
   | 'Panel' | 'Text' | 'Equation' | 'Matrix' | 'Plot'
   | 'Vector' | 'Curve' | 'Mesh' | 'Volume' | 'Label'
   | 'Graph' | 'Code' | 'Image' | 'Viewport' | 'Group'
-  | 'Table' | 'Form' | 'Button' | 'Shape';
+  | 'Table' | 'Form' | 'Button' | 'Shape' | 'Legend';
 
 // ── 2D vs 3D dimensionality (table-driven — single source of truth) ─────────
 //
@@ -168,6 +168,7 @@ export const NODE_DIMENSIONS: Record<NodeType, NodeDimensions> = {
   Button: '2d',
   Image: '2d',
   Shape: '2d',
+  Legend: '2d',
   Label: 'both',
   Vector: 'both',
   Curve: 'both',
@@ -683,6 +684,8 @@ export interface RendererContext {
   getState: () => Record<string, unknown>;
   /** Reactive state write (e.g. from a bound form field); triggers a re-render. */
   setState: (path: string, value: unknown) => void;
+  /** Named visual scales (SceneDocument.scales) for legend/encoding renderers. */
+  getScales: () => Map<string, ScaleDef>;
 }
 
 export type RendererFn = (spec: unknown, ctx: RendererContext) => HTMLElement;
