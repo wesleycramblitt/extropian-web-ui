@@ -2,6 +2,8 @@ import type {
   Visual, SceneNode, SceneDocument, SceneRelation, View, ViewDef, VisualDoc,
   ResolvedDoc, ResolvedView, RendererContext, RendererFn, FocusState, Layout,
   NodeBase, Custom, NodeType, ScaleDef, Port,
+  PatchDocument, PatchOp, ScenePresentationState, SceneAnnotation,
+  SceneAnimationClip, DataBinding, NodeSemantic, SelectionContext,
 } from './types.js';
 import { NODE_DIMENSIONS, SPACE_DIMENSIONS } from './types.js';
 import { resolveRefs, evaluateDerived, isVisualDoc } from './state.js';
@@ -402,6 +404,37 @@ function parseDim(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function numParam(v: unknown, d: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : d;
+}
+
+function emptyPresentation(): ScenePresentationState {
+  return { selection: [], overrides: {}, annotations: [], animations: [] };
+}
+
+/** Collect every entity id in a node tree (for isolate). */
+function collectAllEntityIds(nodes: SceneNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: SceneNode[]): void => {
+    for (const n of list) { ids.push(n.id); walk(n.children); }
+  };
+  walk(nodes);
+  return ids;
+}
+
+function pushAnimation(
+  ps: ScenePresentationState,
+  targets: string[],
+  effect: SceneAnimationClip['effect'],
+  params: Record<string, unknown>,
+): void {
+  const duration = numParam(params.duration, 0.5);
+  const easing = (typeof params.easing === 'string' ? params.easing : 'ease_out') as SceneAnimationClip['easing'];
+  for (const t of targets) {
+    ps.animations.push({ target: t, effect, duration, easing });
+  }
+}
+
 // ── SceneNode render dispatcher ─────────────────────────────────────────────
 
 export function renderSceneNode(node: SceneNode, ctx: RendererContext): HTMLElement {
@@ -505,6 +538,9 @@ class ViewImpl implements View {
   private _hoveredId: string | null = null;
   private _onHover = (e: MouseEvent): void => this._handleHover(e);
   private _onHoverLeave = (): void => this._clearHover();
+  private _onClick = (e: MouseEvent): void => this._handleClick(e);
+  /** Mutable presentation state (AI mutations are applied here). */
+  private _presentation: ScenePresentationState = emptyPresentation();
 
   constructor(container: HTMLElement, input: Visual | VisualDoc | SceneDocument) {
     this._container = container;
@@ -513,6 +549,8 @@ class ViewImpl implements View {
     // Delegated hover-highlight (nodes + their incident edges/neighbors).
     container.addEventListener('mouseover', this._onHover);
     container.addEventListener('mouseleave', this._onHoverLeave);
+    // Delegated click selection (single / shift-toggle / clear).
+    container.addEventListener('click', this._onClick);
 
     if (isSceneDocument(input)) {
       this._sceneDoc = input as SceneDocument;
@@ -574,11 +612,10 @@ class ViewImpl implements View {
 
   setFocus(f: Partial<FocusState>): void {
     this._focus = { ...this._focus, ...f };
-    this._container.querySelectorAll('[data-exd-selected]').forEach(e => e.removeAttribute('data-exd-selected'));
+    this._applySelection(this._focus.selection ?? (this._focus.entity ? [this._focus.entity] : []));
     if (this._focus.entity) {
       const el = this.find(this._focus.entity);
       if (el) {
-        el.setAttribute('data-exd-selected', 'true');
         el.style.transition = 'outline 0.3s';
         el.style.outline = '2px solid #4a9eff';
         setTimeout(() => { el.style.outline = ''; }, 1500);
@@ -629,6 +666,7 @@ class ViewImpl implements View {
     this._focus = {};
     this._container.removeEventListener('mouseover', this._onHover);
     this._container.removeEventListener('mouseleave', this._onHoverLeave);
+    this._container.removeEventListener('click', this._onClick);
   }
 
   // ── Hover-highlight (interaction) ─────────────────────────────────────────
@@ -638,8 +676,10 @@ class ViewImpl implements View {
     const id = target?.getAttribute('data-exd-id') ?? null;
     if (id === this._hoveredId) return;
     this._hoveredId = id;
+    this._focus.hover = id ?? undefined;
     this._clearHover();
     if (id) this._applyHover(id);
+    this._dispatch('hover:change', { entity: id });
   }
 
   private _applyHover(id: string): void {
@@ -665,6 +705,150 @@ class ViewImpl implements View {
   private _clearHover(): void {
     this._container.querySelectorAll('[data-exd-hovered]')
       .forEach(el => el.removeAttribute('data-exd-hovered'));
+  }
+
+  // ── Selection (interaction) ───────────────────────────────────────────────
+
+  private _handleClick(e: MouseEvent): void {
+    const target = (e.target as Element).closest?.('[data-exd-id]') as HTMLElement | null;
+    const id = target?.getAttribute('data-exd-id') ?? null;
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    let selection: string[];
+    let focus: string | undefined;
+    if (id) {
+      if (additive) {
+        const prev = this._focus.selection ?? [];
+        selection = prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id];
+        focus = id;
+      } else {
+        selection = [id];
+        focus = id;
+      }
+    } else {
+      selection = [];
+      focus = undefined;
+    }
+    this._focus.selection = selection;
+    this._focus.entity = focus;
+    this._applySelection(selection);
+    this._dispatch('selection:change', { selection, focus });
+  }
+
+  private _applySelection(selection: string[]): void {
+    this._container.querySelectorAll('[data-exd-selected]')
+      .forEach(el => el.removeAttribute('data-exd-selected'));
+    for (const id of selection) {
+      const el = this.find(id);
+      if (el) el.setAttribute('data-exd-selected', 'true');
+    }
+  }
+
+  /** Dispatch an action event to registered handlers (+ wildcard). */
+  private _dispatch(action: string, payload: unknown): void {
+    const set = this._handlers.get(action);
+    if (set) for (const fn of set) fn(payload);
+    const wild = this._handlers.get('*');
+    if (wild && wild !== set) for (const fn of wild) fn({ action, payload });
+  }
+
+  // ── AI mutation runtime ───────────────────────────────────────────────────
+
+  applyPatchDocument(patch: PatchDocument): void {
+    if (!this._sceneDoc) return;
+    for (const op of patch.ops) this._applyPatchOp(op, this._presentation);
+    clearPresentationState(this._container);
+    applyPresentationState(this._container, this._presentation);
+    this._dispatch('mutations:applied', { patch, presentation: structuredClone(this._presentation) });
+  }
+
+  private _applyPatchOp(op: PatchOp, ps: ScenePresentationState): void {
+    const params = (op.params ?? {}) as Record<string, unknown>;
+    const targets = (Array.isArray(params.targets) ? params.targets : [op.target]).filter(Boolean) as string[];
+    switch (op.op) {
+      case 'isolate': {
+        const keep = new Set(targets);
+        for (const id of collectAllEntityIds(this._sceneDoc!.nodes)) {
+          if (keep.has(id)) delete ps.overrides[id];
+          else ps.overrides[id] = { emphasis: 'subtle', opacity: 0.15 };
+        }
+        break;
+      }
+      case 'dim':
+        for (const t of targets) ps.overrides[t] = { emphasis: 'subtle', opacity: numParam(params.opacity, 0.15) };
+        break;
+      case 'highlight':
+        for (const t of targets) ps.overrides[t] = { emphasis: 'primary', opacity: numParam(params.opacity, 1) };
+        break;
+      case 'reveal':
+        for (const t of targets) delete ps.overrides[t];
+        if (params.animate) pushAnimation(ps, targets, 'fade_in', params);
+        break;
+      case 'conceal':
+        for (const t of targets) ps.overrides[t] = { emphasis: 'subtle', opacity: 0 };
+        if (params.animate) pushAnimation(ps, targets, 'fade_out', params);
+        break;
+      case 'annotate': {
+        const id = typeof params.id === 'string' ? params.id : `ann-${op.target}`;
+        ps.annotations = ps.annotations.filter(a => a.id !== id);
+        ps.annotations.push({
+          id,
+          target: op.target,
+          text: String(params.text ?? ''),
+          position: (params.position as SceneAnnotation['position']) ?? 'below',
+          style: (params.style as SceneAnnotation['style']) ?? 'callout',
+        });
+        break;
+      }
+      case 'camera_focus':
+        ps.camera = { space: op.target, ...(params.pose ? { pose: params.pose as never } : {}) };
+        break;
+      case 'reset':
+        ps.overrides = {};
+        ps.annotations = [];
+        ps.animations = [];
+        ps.focus_entity = undefined;
+        ps.selection = [];
+        ps.camera = undefined;
+        break;
+      case 'scrub':
+      case 'sequence':
+        console.warn(`[extropian-web-ui] patch op "${op.op}" not yet implemented (needs a time/step model).`);
+        break;
+    }
+  }
+
+  // ── Context extraction ────────────────────────────────────────────────────
+
+  getContext(): SelectionContext {
+    const selection = this._focus.selection ?? (this._focus.entity ? [this._focus.entity] : []);
+    const nodeById = new Map<string, SceneNode>();
+    const collect = (list: SceneNode[]): void => {
+      for (const n of list) { nodeById.set(n.id, n); collect(n.children); }
+    };
+    collect(this._sceneDoc?.nodes ?? []);
+
+    const entities: SelectionContext['entities'] = [];
+    for (const id of selection) {
+      const n = nodeById.get(id);
+      if (!n) continue;
+      const content = n.content as Record<string, unknown>;
+      entities.push({
+        id: n.id,
+        type: n.type,
+        semantic: n.semantic,
+        label: content.label ?? content.text ?? content.title,
+        data: n.data,
+      });
+    }
+    const relations = this._relations.filter(r => selection.includes(r.source) || selection.includes(r.target));
+
+    return {
+      selection,
+      focus: this._focus.entity,
+      entities,
+      relations,
+      state: { ...this._state },
+    };
   }
 
   // ── Internal: SceneDocument rendering ────────────────────────────────────
@@ -745,6 +929,7 @@ class ViewImpl implements View {
     if (!this._sceneDoc) return;
     const doc = this._sceneDoc;
     this._relations = doc.relations ?? [];
+    this._presentation = doc.presentation ? structuredClone(doc.presentation) : emptyPresentation();
     this._container.innerHTML = '';
     clearPresentationState(this._container);
 
@@ -867,9 +1052,7 @@ class ViewImpl implements View {
     }
 
     // Apply presentation state
-    if (doc.presentation) {
-      applyPresentationState(this._container, doc.presentation);
-    }
+    applyPresentationState(this._container, this._presentation);
   }
 
   // ── Internal: Legacy VisualDoc rendering ─────────────────────────────────
@@ -1002,12 +1185,7 @@ class ViewImpl implements View {
     return {
       render(v: Visual) { return renderNode(v, self._makeCtx()); },
       renderNode(node: SceneNode) { return renderSceneNode(node, self._makeCtx()); },
-      emit(action: string, payload: unknown) {
-        const set = self._handlers.get(action);
-        if (set) for (const fn of set) fn(payload);
-        const wild = self._handlers.get('*');
-        if (wild && wild !== set) for (const fn of wild) fn({ action, payload });
-      },
+      emit(action: string, payload: unknown) { self._dispatch(action, payload); },
       focus(entityId: string, isSelection?: boolean) {
         self._focus.entity = entityId;
         if (isSelection) {

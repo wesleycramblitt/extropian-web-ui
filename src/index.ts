@@ -28,6 +28,7 @@ export { NODE_DIMENSIONS, SPACE_DIMENSIONS } from './types.js';
 // ── Shared types ────────────────────────────────────────────────────────────
 export type {
   View, FocusState, RendererContext, RendererFn, RenderInput,
+  SelectionContext,
 } from './types.js';
 
 // ── Legacy types (deprecated) ───────────────────────────────────────────────

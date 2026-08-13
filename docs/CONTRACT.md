@@ -362,7 +362,49 @@ interface AIResponse {
 }
 ```
 
-Mutations are **not yet applied by the runtime** — the types and discriminator exist so an AI can emit them; the apply-mutation engine is the next implementation step.
+> **Legacy `Mutation`** (above) is deprecated in favor of the unified
+> `PatchOp`/`PatchDocument` (§19). The runtime now applies patches via
+> `view.applyPatchDocument(patch)` — see §9b below.
+
+---
+
+## 9b. Interaction & mutation runtime (IMPLEMENTED)
+
+The main interactive loop: **select a context → ask a clarifying question →
+the AI returns a `PatchDocument` → mutations are applied to the scene.**
+
+```ts
+// User selection (runtime, ephemeral — lives in the View, not the document):
+//   click = select; shift/ctrl-click = toggle; click-empty = clear.
+view.getFocus().selection;              // string[] — user's live selection
+
+// Enriched context for the AI (derived on demand):
+const ctx = view.getContext();          // SelectionContext
+// { selection, focus?, entities[], relations[], state }
+
+// Apply AI mutations to presentation state (targeted, then re-applied):
+view.applyPatchDocument({
+  ops: [
+    { op: 'highlight', target: 'node_a', params: {} },
+    { op: 'annotate', target: 'node_a', params: { text: '…', position: 'below' } },
+    { op: 'isolate',  target: 'node_a', params: {} },
+  ],
+});
+```
+
+Implemented ops (of the 10): `isolate`, `dim`, `highlight`, `reveal`, `conceal`,
+`annotate`, `camera_focus`, `reset`. `scrub`/`sequence` are deferred (need a
+time/step model). `focus`/`select` are **not** PatchOps in the C++ contract —
+user selection is `FocusState.selection`; AI-authored selection is
+`ScenePresentationState.selection`.
+
+Structured events (subscribe via `view.on(name, handler)` or the `'*'` wildcard):
+
+| Event | Payload |
+|-------|---------|
+| `selection:change` | `{ selection, focus }` |
+| `hover:change` | `{ entity }` |
+| `mutations:applied` | `{ patch, presentation }` |
 
 ---
 
@@ -554,11 +596,14 @@ Deprecated GL/WASM files (`src/gl/`, `src/wasm/`, `wasm/`) remain in the repo bu
 - DataBinding: `SceneNode.data.bind` (+ `path`) injects a bound value into the
   node's primary content field; bound form fields read/write `state` two-way
   (see §19)
+- Interaction: hover-highlight (node + neighbors + edges), click/shift-click
+  selection, `getContext()`, and `applyPatchDocument()` (AI mutation runtime)
+  — see §9b
 
 ### Types defined, rendering deferred
 - 20 control types (sliders, matrix_editor, play_pause, etc.)
 - 17 relation types
-- AI mutation contract (14 mutation operations)
+- `scrub`/`sequence` patch ops (need a time/step model)
 - AIResponse envelope
 
 ### Deferred to the 3D renderer

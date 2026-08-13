@@ -153,8 +153,10 @@ const CSS = `
     to { opacity: 1; transform: translateY(0); }
   }
 
+  /* Persistent multi-selection outline. */
   [data-exd-selected] {
-    transition: outline 0.3s;
+    outline: 2px solid #4a9eff;
+    outline-offset: 1px;
   }
 
   /* ── Space containers ──────────────────────────────────────────────────── */

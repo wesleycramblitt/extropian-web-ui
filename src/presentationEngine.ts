@@ -254,7 +254,9 @@ export function clearPresentationState(container: HTMLElement): void {
     e.style.zIndex = '';
     e.style.transform = '';
     e.removeAttribute('data-exd-selected');
-    // Cancel any running animations
-    e.getAnimations().forEach(a => a.cancel());
+    // Cancel any running animations (guard: jsdom/older browsers lack getAnimations).
+    if (typeof e.getAnimations === 'function') {
+      e.getAnimations().forEach(a => a.cancel());
+    }
   });
 }

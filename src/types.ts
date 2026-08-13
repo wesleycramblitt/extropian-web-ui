@@ -356,6 +356,30 @@ export interface FocusState {
   path?: string[];
 }
 
+/**
+ * Enriched context for the current user selection — the bridge between the
+ * web renderer and the AI (semantic-to-visual). Derived on demand; not stored
+ * in the document.
+ */
+export interface SelectionContext {
+  /** Selected entity ids (user's live selection). */
+  selection: string[];
+  /** Primary/focused entity id, if any. */
+  focus?: string;
+  /** Enriched info for each selected entity. */
+  entities: {
+    id: string;
+    type: NodeType;
+    semantic?: NodeSemantic;
+    label?: unknown;
+    data?: DataBinding;
+  }[];
+  /** Relations touching the selection (source or target in selection). */
+  relations: SceneRelation[];
+  /** Current reactive state (snapshot). */
+  state: Record<string, unknown>;
+}
+
 // ============================================================================
 // Legacy types (deprecated — retained for backward compatibility)
 // ============================================================================
@@ -715,5 +739,12 @@ export interface View {
    * only nodes whose content references the changed key are re-rendered.
    */
   setState(path: string, value: unknown): void;
+  /**
+   * Apply an AI mutation patch (PatchDocument) to the scene's presentation
+   * state, then re-apply presentation and emit `mutations:applied`.
+   */
+  applyPatchDocument(patch: PatchDocument): void;
+  /** Build the enriched selection context for the current user selection. */
+  getContext(): SelectionContext;
   unmount(): void;
 }
