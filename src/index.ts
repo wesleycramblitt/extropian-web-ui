@@ -1,5 +1,5 @@
 export { render, registerRenderer, isSceneDocument, renderSceneNode } from './render.js';
-export { renderSceneDocument, renderSceneRelations } from './render.js';
+export { renderSceneDocument, renderSceneRelations, is2DSceneDocument } from './render.js';
 export { injectBaseStyles } from './styles.js';
 export { resolveRefs, evaluateDerived, isVisualDoc } from './state.js';
 export { resolveSpaces, createSpaceContainer, groupNodesBySpace, getSpaceForNode } from './spaceResolver.js';
@@ -13,9 +13,12 @@ export type {
   ScenePresentationState, SceneAnnotation, SceneAnimationClip,
   Space, SpaceType, SpaceLayout, Camera, CameraPose, GridHint,
   NodeType, Transform, Orient, LayoutHint, DataBinding,
-  NodeSemantic, NodeInteraction, NodeStyle,
+  NodeSemantic, NodeInteraction, NodeStyle, NodeDimensions,
   CameraOverride, StyleOverride, PatchOp, PatchDocument,
 } from './types.js';
+
+// ── Dimensionality tables (2D vs 3D document model) ─────────────────────────
+export { NODE_DIMENSIONS, SPACE_DIMENSIONS } from './types.js';
 
 // ── Shared types ────────────────────────────────────────────────────────────
 export type {

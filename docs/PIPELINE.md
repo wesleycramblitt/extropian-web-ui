@@ -11,6 +11,14 @@ const view = render(sceneDocument, container);
 // view: View — root, on(), find(), setState(), setFocus(), unmount()
 ```
 
+## 2D vs 3D dispatch
+
+`Space.projection` is the backend switch: **orthographic = fixed 2D** (native
+DOM/CSS + d3 SVG, the primary web path) and **perspective = camera-based 3D**
+(placeholder until the 3D renderer lands). Node dimensionality is table-driven
+(`NODE_DIMENSIONS` / `SPACE_DIMENSIONS` in `src/types.ts`); placement is
+validated at render. See `CONTRACT.md` §18 for the full tables and rules.
+
 ## Pipeline Trace
 
 ```
@@ -26,19 +34,24 @@ render(sceneDocument, container)
             │   │                                  CSS position, size, background, overflow per space type
             │   │                                  Screen → static, Panel → relative, Overlay → absolute
             │   │
-            ├─ groupNodesBySpace(doc.nodes)        SceneNode[] → Map<spaceId, SceneNode[]>
-            │   │                                  Recursively walks node tree, partitions by space
+             ├─ groupNodesBySpace(doc.nodes)        SceneNode[] → Map<spaceId, SceneNode[]>
+             │   │                                  Partitions top-level nodes by space; children
+             │   │                                  render inline inside their parent (DOM nesting)
             │   │
             ├─ createSpaceContainer(space)         ResolvedSpace → HTMLElement
             │   │                                  Creates positioned div per space with CSS classes
             │   │
-            └─ for each space → for each node:
-                 │
-                 └─ renderSceneNode(node, ctx)
-                      │
-                      ├─ visibility check          skips node if style.visible === false
-                      │
-                      ├─ sceneRendererRegistry.get(node.type)()
+     └─ for each space → for each node:
+          │
+          └─ renderSceneNode(node, ctx)
+               │
+               ├─ visibility check          skips node if style.visible === false
+               │
+               ├─ placement validation      node dimension (NODE_DIMENSIONS[type]) vs
+               │                            space dimension (SPACE_DIMENSIONS[space])
+               │                            3D node → placeholder + console.warn
+               │
+               ├─ sceneRendererRegistry.get(node.type)()
                       │   │
                       │   └─ Adapts SceneNode geometry/content → legacy Visual type
                       │       → existing component renderer
@@ -76,6 +89,18 @@ render(sceneDocument, container)
 | `Volume` | Placeholder | inline | — | ⏳ v0.2 |
 | `Viewport` | Placeholder | inline | — | ⏳ v0.2 |
 
+> **Note on interaction wiring:** the "Status" column above reflects
+> content/geometry rendering only, not `SceneNode.interaction`. Of the 6
+> `NodeInteraction` booleans (`hover`, `select`, `drag`, `focus`, `inspect`,
+> `edit`), `applySceneNodeAttrs()` only reads `select`/`focus`/`inspect`, and
+> only to set `cursor: pointer` + `tabIndex = 0`. `hover`, `drag`, and `edit`
+> are not read anywhere else in the SceneNode pipeline. The only components
+> with real interactive behavior are `button.ts` (click → `ctx.emit`) and
+> `graph.ts` (d3-force drag) — and both are unconditional, i.e. neither
+> actually checks `node.interaction` before wiring up the handler. Every
+> other node type has no interaction behavior regardless of what its
+> `interaction` flags say.
+
 ## Key Files
 
 | File | Role |
@@ -97,6 +122,10 @@ render(sceneDocument, container)
 ```
 SceneDocument.state ───────► cloned into ViewImpl._state
                                    │
+SceneDocument.nodes ─────────► resolveRefs(nodes, state)   ($ref → value)
+                                   │
+SceneNode.data.bind ──────────► applyDataBinding()            (inject into content)
+                                   │
 SceneDocument.presentation ──► applyPresentationState()
                                    │
 User interaction ───────────► ctx.emit(action, payload)
@@ -104,6 +133,9 @@ User interaction ───────────► ctx.emit(action, payload)
                               ViewImpl._handlers[action]
                                    │
                               User callback (via view.on())
+                                   │
+view.setState(path, value) ──► mutate _state → targeted update
+                                   (re-render only dependent nodes, by id)
 ```
 
 ## Backward Compatibility

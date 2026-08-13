@@ -5,7 +5,7 @@ import type {
   Panel, Text as VisualText, Math, Chart, Matrix as VisualMatrix,
   Table as VisualTable, Graph as VisualGraph, Form, Button, ViewRef, Custom,
   Space, SceneNode, SceneRelation, ScenePresentationState,
-  SceneAnnotation, NodeSemantic, SceneRelationStyle,
+  SceneAnnotation, NodeSemantic, SceneRelationStyle, StyleOverride,
 } from './types.js';
 
 export function convertVisualDocToSceneDocument(
@@ -375,7 +375,7 @@ function convertPresentation(ps: import('./types.js').PresentationState): SceneP
     style: 'callout' as const,
   }));
 
-  const overrides: Record<string, { emphasis: string; opacity: number }> = {};
+  const overrides: Record<string, StyleOverride> = {};
   if (ps.highlights) {
     for (const id of ps.highlights) {
       overrides[id] = { emphasis: 'primary', opacity: 1 };

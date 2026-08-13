@@ -1,6 +1,10 @@
 // ============================================================================
 // SceneDocument — Unified type schema (v1.0)
-// Mirror of C++ types in extropian-semantic-to-visual/include/exd/types/scene_document.hpp
+//
+// Mirror of the C++ structs in extropian-core/include/exd/types/
+// (scene_document.hpp, presentation_state.hpp). The C++ structs are the
+// authority; this file is a hand-kept mirror aligned by review (there is no
+// shared test fixture harness). JSON wire names match the C++ field names.
 // ============================================================================
 
 // ── Space types ─────────────────────────────────────────────────────────────
@@ -39,6 +43,7 @@ export interface Space {
   type: SpaceType;
   parent?: string;
   layout?: SpaceLayout;
+  /** `orthographic` = fixed 2D canvas (web-native); `perspective` = camera-based 3D. */
   projection: 'orthographic' | 'perspective';
   background: string;
   camera?: Camera;
@@ -53,6 +58,52 @@ export type NodeType =
   | 'Vector' | 'Curve' | 'Mesh' | 'Volume' | 'Label'
   | 'Graph' | 'Code' | 'Image' | 'Viewport' | 'Group'
   | 'Table' | 'Form' | 'Button';
+
+// ── 2D vs 3D dimensionality (table-driven — single source of truth) ─────────
+//
+// The document has no explicit "dimensions" field. A node's dimensionality is
+// derived from its `type`; a space's from its `type` (+ `projection`).
+// See docs/CONTRACT.md §18 for the full rules.
+
+/** Dimensionality of a node or space. `both` = same concept, per-backend geometry. */
+export type NodeDimensions = '2d' | '3d' | 'both';
+
+/** Space dimensionality by SpaceType. Orthographic = 2D, perspective = 3D. */
+export const SPACE_DIMENSIONS: Record<SpaceType, '2d' | '3d'> = {
+  screen: '2d',
+  panel: '2d',
+  cartesian2d: '2d',
+  overlay: '2d',
+  viewport3d: '3d',
+  world3d: '3d',
+};
+
+/**
+ * Node dimensionality by NodeType.
+ * - 2d:    web-native UI/UX + d3 SVG (fully rendered by the DOM backend)
+ * - both:  same concept, per-backend geometry (Label = billboard text in 3D)
+ * - 3d:    3D-only; placeholder in the web backend until the 3D renderer lands
+ */
+export const NODE_DIMENSIONS: Record<NodeType, NodeDimensions> = {
+  Panel: '2d',
+  Text: '2d',
+  Code: '2d',
+  Equation: '2d',
+  Matrix: '2d',
+  Plot: '2d',
+  Table: '2d',
+  Form: '2d',
+  Button: '2d',
+  Image: '2d',
+  Label: 'both',
+  Vector: 'both',
+  Curve: 'both',
+  Graph: 'both',
+  Group: 'both',
+  Mesh: '3d',
+  Volume: '3d',
+  Viewport: '3d',
+};
 
 export interface Transform {
   position: [number, number, number];
@@ -76,7 +127,9 @@ export interface LayoutHint {
 }
 
 export interface DataBinding {
+  /** Named data source: a key in `SceneDocument.data_sources` (falls back to `state`). */
   bind: string;
+  /** Subpath into the bound value, e.g. `"[0][0]"` or `".values"`. */
   path?: string;
 }
 
@@ -99,8 +152,10 @@ export interface NodeInteraction {
 }
 
 export interface NodeStyle {
+  /** Canonical emphasis vocabulary (shared with {@link StyleOverride}): `subtle` (dimmed) → `default` → `primary` → `prominent`. */
   emphasis: 'subtle' | 'default' | 'primary' | 'prominent';
   opacity: number;
+  /** Visual depth for 3D layering; unused by the 2D web backend. */
   depth: number;
   visible: boolean;
 }
@@ -149,7 +204,8 @@ export interface CameraOverride {
 }
 
 export interface StyleOverride {
-  emphasis: string;
+  /** Same vocabulary as {@link NodeStyle.emphasis}; runtime overrides default to `subtle` (dim). */
+  emphasis: 'subtle' | 'default' | 'primary' | 'prominent';
   opacity: number;
 }
 
@@ -198,7 +254,9 @@ export interface SceneDocument {
   nodes: SceneNode[];
   relations: SceneRelation[];
   presentation?: ScenePresentationState;
+  /** Canonical reactive state — `$ref` strings in node content resolve against this. */
   state: Record<string, unknown>;
+  /** Named data sources referenced by `DataBinding.bind`. */
   data_sources: Record<string, unknown>;
 }
 
@@ -269,6 +327,8 @@ export interface Field {
   step?: number;
   options?: string[];
   action?: string;
+  /** Two-way state binding: read initial value from state and write on change. */
+  bind?: string;
   semantic?: Semantic;
 }
 
@@ -542,6 +602,8 @@ export interface RendererContext {
   focus: (entityId: string, isSelection?: boolean) => void;
   getFocus: () => FocusState;
   getState: () => Record<string, unknown>;
+  /** Reactive state write (e.g. from a bound form field); triggers a re-render. */
+  setState: (path: string, value: unknown) => void;
 }
 
 export type RendererFn = (spec: unknown, ctx: RendererContext) => HTMLElement;
@@ -560,6 +622,10 @@ export interface View {
   getFocus(): FocusState;
   setFocus(focus: Partial<FocusState>): void;
   getState(): Record<string, unknown>;
+  /**
+   * Write to reactive state. For a SceneDocument this is a targeted update —
+   * only nodes whose content references the changed key are re-rendered.
+   */
   setState(path: string, value: unknown): void;
   unmount(): void;
 }

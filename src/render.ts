@@ -3,6 +3,7 @@ import type {
   ResolvedDoc, ResolvedView, RendererContext, RendererFn, FocusState, Layout,
   NodeBase, Custom, NodeType,
 } from './types.js';
+import { NODE_DIMENSIONS, SPACE_DIMENSIONS } from './types.js';
 import { resolveRefs, evaluateDerived, isVisualDoc } from './state.js';
 import { renderLayout } from './layout.js';
 import { resolveSpaces, createSpaceContainer, groupNodesBySpace } from './spaceResolver.js';
@@ -30,6 +31,7 @@ import { renderForm } from './components/form.js';
 import { renderButton } from './components/button.js';
 import { renderViewRef } from './components/view_ref.js';
 import { renderImage } from './components/image.js';
+import { renderVector2D, renderCurve2D } from './components/geometry2d.js';
 
 registerRenderer('panel', renderPanel as RendererFn);
 registerRenderer('text', renderText as RendererFn);
@@ -201,6 +203,7 @@ registerSceneRenderer('Form', (node, ctx) => {
       min: f.min as number | undefined,
       max: f.max as number | undefined,
       step: f.step as number | undefined,
+      bind: f.bind as string | undefined,
     })),
     semantic: convertNodeSemanticToSemantic(node.semantic),
     interaction: interactionToLegacy(node.interaction),
@@ -223,26 +226,31 @@ registerSceneRenderer('Button', (node, ctx) => {
 
 registerSceneRenderer('Image', (node, ctx) => renderImage(node, ctx));
 
-// Placeholder renderers for 3D types (v0.2)
-function renderPlaceholder(nodeType: string): (node: SceneNode) => HTMLElement {
-  return (node: SceneNode) => {
-    const el = document.createElement('div');
-    el.className = 'exd-placeholder';
-    el.style.cssText = `
-      background: #1a1a2e; border: 1px dashed #3a3a6a; border-radius: 6px;
-      padding: 20px; text-align: center; color: #606080; font-size: 12px;
-      font-family: 'JetBrains Mono', monospace;
-    `;
-    el.textContent = `[${nodeType}] — 3D not yet available (v0.2)`;
-    return el;
-  };
+// ── 3D-only node types ──────────────────────────────────────────────────────
+// These have no web renderer yet. renderSceneNode intercepts them before
+// dispatch (node-level placement check), so these registry entries are only
+// reached if the renderer is invoked directly.
+function render3DPlaceholder(nodeType: string): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'exd-placeholder exd-placeholder-3d';
+  el.style.cssText = `
+    background: #1a1a2e; border: 1px dashed #3a3a6a; border-radius: 6px;
+    padding: 20px; text-align: center; color: #606080; font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+  `;
+  el.textContent = `[${nodeType}] — 3D (deferred to the 3D renderer)`;
+  return el;
 }
 
-registerSceneRenderer('Vector', (node, ctx) => renderPlaceholder('Vector')(node));
-registerSceneRenderer('Curve', (node, ctx) => renderPlaceholder('Curve')(node));
-registerSceneRenderer('Mesh', (node, ctx) => renderPlaceholder('Mesh')(node));
-registerSceneRenderer('Volume', (node, ctx) => renderPlaceholder('Volume')(node));
-// Label: 2D billboard text — renders same as Text node.
+registerSceneRenderer('Mesh', (node) => render3DPlaceholder('Mesh'));
+registerSceneRenderer('Volume', (node) => render3DPlaceholder('Volume'));
+registerSceneRenderer('Viewport', (node) => render3DPlaceholder('Viewport'));
+
+// ── 'both'-dimensionality nodes — native 2D form ────────────────────────────
+registerSceneRenderer('Vector', (node, ctx) => renderVector2D(node, ctx));
+registerSceneRenderer('Curve', (node, ctx) => renderCurve2D(node, ctx));
+
+// Label: 2D text (billboard text in 3D).
 // Content: { text: string, alignment?: string }
 // Geometry: { fontSize?: number }
 registerSceneRenderer('Label', (node, ctx) => {
@@ -257,7 +265,6 @@ registerSceneRenderer('Label', (node, ctx) => {
   };
   return renderText(spec, ctx);
 });
-registerSceneRenderer('Viewport', (node, ctx) => renderPlaceholder('Viewport')(node));
 registerSceneRenderer('Group', (node, ctx) => {
   // Group is a pass-through: render children in a wrapper
   const wrapper = document.createElement('div');
@@ -314,6 +321,74 @@ function interactionToLegacy(
   return list.length > 0 ? list : undefined;
 }
 
+// ── DataBinding helpers ─────────────────────────────────────────────────────
+
+/** Primary content field each node type reads as its bound value. */
+const CONTENT_KEY_BY_TYPE: Partial<Record<NodeType, string>> = {
+  Text: 'text',
+  Label: 'text',
+  Code: 'source',
+  Equation: 'source',
+  Matrix: 'value',
+  Plot: 'series',
+  Table: 'rows',
+};
+
+/**
+ * Resolve `node.data.bind` (+ `node.data.path`) against the binding scope and
+ * inject the result into the node's primary content field. Expressed as a
+ * `$ref` expression so it reuses the existing resolver
+ * (bind "A" + path "[0][0]" → "$A[0][0]").
+ */
+function applyDataBinding(node: SceneNode, scope: Record<string, unknown>): void {
+  if (!node.data?.bind) return;
+  const expr = '$' + node.data.bind + (node.data.path ?? '');
+  const value = resolveRefs(expr, scope, {});
+  if (value === expr) return; // unresolvable — keep content as authored
+  const key = CONTENT_KEY_BY_TYPE[node.type];
+  if (!key) return;
+  (node.content as Record<string, unknown>)[key] = value;
+}
+
+/** Extract the top-level key a `$ref` expression or binding name refers to. */
+function refTopKey(ref: string): string {
+  const s = ref.startsWith('$') ? ref.slice(1) : ref;
+  const m = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(s);
+  return m ? m[0] : s;
+}
+
+/**
+ * Collect the top-level state keys a single node depends on (from `$ref`
+ * strings in its content/geometry and its `data.bind`). Children are NOT
+ * walked — the caller maps each node to its own id.
+ */
+function collectNodeDependencies(node: SceneNode): string[] {
+  const keys = new Set<string>();
+  const visit = (v: unknown): void => {
+    if (typeof v === 'string' && v.startsWith('$') && v.length > 1) {
+      keys.add(refTopKey(v));
+    } else if (Array.isArray(v)) {
+      v.forEach(visit);
+    } else if (v && typeof v === 'object' && v.constructor === Object) {
+      for (const val of Object.values(v as Record<string, unknown>)) visit(val);
+    }
+  };
+  visit(node.content);
+  visit(node.geometry);
+  if (node.data?.bind) keys.add(refTopKey(node.data.bind));
+  return [...keys];
+}
+
+/** Find a node by id within a node tree (depth-first). */
+function findSceneNodeById(nodes: SceneNode[], id: string): SceneNode | null {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const found = findSceneNodeById(n.children, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 // ── SceneNode render dispatcher ─────────────────────────────────────────────
 
 export function renderSceneNode(node: SceneNode, ctx: RendererContext): HTMLElement {
@@ -322,6 +397,15 @@ export function renderSceneNode(node: SceneNode, ctx: RendererContext): HTMLElem
     const hidden = document.createElement('div');
     hidden.style.display = 'none';
     return hidden;
+  }
+
+  // Placement validation: 3D-only node types have no web renderer yet.
+  if (NODE_DIMENSIONS[node.type] === '3d') {
+    console.warn(
+      `[extropian-web-ui] node "${node.id}" (${node.type}) is 3D-only; ` +
+      'rendering placeholder until the 3D backend lands.',
+    );
+    return render3DPlaceholder(node.type);
   }
 
   const fn = sceneRendererRegistry.get(node.type);
@@ -394,6 +478,8 @@ class ViewImpl implements View {
   private _state: Record<string, unknown> = {};
   private _derived: Record<string, unknown> = {};
   private _focus: FocusState = {};
+  /** Reactive dependency map: top-level state key → set of node ids that reference it. */
+  private _deps = new Map<string, Set<string>>();
 
   constructor(container: HTMLElement, input: Visual | VisualDoc | SceneDocument) {
     this._container = container;
@@ -484,6 +570,24 @@ class ViewImpl implements View {
       obj = obj[p] as Record<string, unknown>;
     }
     obj[parts[parts.length - 1]] = value;
+
+    // SceneDocument path: re-render only the nodes that depend on the
+    // changed key (targeted update) instead of the whole document. This keeps
+    // continuous inputs (range sliders, text fields) from being torn down
+    // mid-interaction.
+    if (this._sceneDoc) {
+      const key = parts[0];
+      if (!key) {
+        this._renderSceneDocument();
+        return;
+      }
+      const dependents = this._deps.get(key);
+      if (dependents && dependents.size > 0) {
+        this._renderDependents(dependents);
+      }
+      return;
+    }
+
     if (this._doc?.derive) {
       this._derived = evaluateDerived(this._doc.derive, this._state);
     }
@@ -498,11 +602,81 @@ class ViewImpl implements View {
 
   // ── Internal: SceneDocument rendering ────────────────────────────────────
 
+  /**
+   * Return the document's nodes with all `$ref` strings resolved against the
+   * current state. The original document is left untouched (deep-cloned first)
+   * so repeated re-renders re-resolve from scratch.
+   */
+  private _resolvedSceneNodes(): SceneNode[] {
+    if (!this._sceneDoc) return [];
+    const nodes = structuredClone(this._sceneDoc.nodes) as SceneNode[];
+
+    // DataBinding scope: data_sources take precedence, state is the fallback.
+    const bindingScope: Record<string, unknown> = {
+      ...this._state,
+      ...this._sceneDoc.data_sources,
+    };
+
+    const visit = (n: SceneNode): void => {
+      applyDataBinding(n, bindingScope);
+      n.children.forEach(visit);
+    };
+    nodes.forEach(visit);
+
+    // Resolve $ref strings in content/geometry against state.
+    return resolveRefs(nodes, this._state, {}) as unknown as SceneNode[];
+  }
+
+  /**
+   * Resolve a single node (for a targeted re-render): clone it, apply its
+   * data binding, then resolve $refs against the current state.
+   */
+  private _resolveSingleNode(node: SceneNode): SceneNode {
+    const clone = structuredClone(node) as SceneNode;
+    const bindingScope: Record<string, unknown> = {
+      ...this._state,
+      ...(this._sceneDoc?.data_sources ?? {}),
+    };
+    applyDataBinding(clone, bindingScope);
+    return resolveRefs(clone, this._state, {}) as unknown as SceneNode;
+  }
+
+  /** Re-render only the given dependent nodes, replacing them in place. */
+  private _renderDependents(ids: Set<string>): void {
+    const ctx = this._makeCtx();
+    const nodes = this._sceneDoc?.nodes ?? [];
+    for (const id of ids) {
+      const el = this.find(id);
+      if (!el) continue;
+      const node = findSceneNodeById(nodes, id);
+      if (!node) continue;
+      el.replaceWith(renderSceneNode(this._resolveSingleNode(node), ctx));
+    }
+  }
+
+  /** Rebuild the state-key → node-id dependency map from the document tree. */
+  private _rebuildDependencies(): void {
+    const deps = new Map<string, Set<string>>();
+    const walk = (n: SceneNode): void => {
+      for (const key of collectNodeDependencies(n)) {
+        let set = deps.get(key);
+        if (!set) { set = new Set(); deps.set(key, set); }
+        set.add(n.id);
+      }
+      n.children.forEach(walk);
+    };
+    (this._sceneDoc?.nodes ?? []).forEach(walk);
+    this._deps = deps;
+  }
+
   private _renderSceneDocument(): void {
     if (!this._sceneDoc) return;
     const doc = this._sceneDoc;
     this._container.innerHTML = '';
     clearPresentationState(this._container);
+
+    // Recompute the reactive dependency map (used by targeted setState updates).
+    this._rebuildDependencies();
 
     // Resolve spaces
     const spaces = resolveSpaces(doc.spaces);
@@ -511,8 +685,8 @@ class ViewImpl implements View {
     // Find or create screen space
     const screenId = screenSpace?.id ?? 'screen';
 
-    // Group nodes by space
-    const nodesBySpace = groupNodesBySpace(doc.nodes);
+    // Group nodes by space (children render inline inside their parent)
+    const nodesBySpace = groupNodesBySpace(this._resolvedSceneNodes());
 
     const ctx = this._makeCtx();
 
@@ -538,6 +712,19 @@ class ViewImpl implements View {
       const space = spaces.get(spaceId);
       if (!space) continue;
       const spaceEl = createSpaceContainer(space, spaces);
+
+      // Placement validation: 3D spaces render as placeholders until the
+      // 3D backend lands (their nodes are not individually rendered).
+      if (SPACE_DIMENSIONS[space.type] === '3d') {
+        console.warn(
+          `[extropian-web-ui] space "${spaceId}" (${space.type}) is 3D; ` +
+          'rendering placeholder until the 3D backend lands.',
+        );
+        spaceEl.appendChild(render3DPlaceholder(space.type));
+        screenEl.appendChild(spaceEl);
+        continue;
+      }
+
       for (const node of nodes) {
         spaceEl.appendChild(renderSceneNode(node, ctx));
       }
@@ -703,6 +890,7 @@ class ViewImpl implements View {
       },
       getFocus: () => ({ ...self._focus }),
       getState: () => ({ ...self._state, ...self._derived }),
+      setState(path: string, value: unknown) { self.setState(path, value); },
     };
   }
 }
@@ -826,6 +1014,20 @@ export function isSceneDocument(input: unknown): input is SceneDocument {
   if (!input || typeof input !== 'object') return false;
   const d = input as Record<string, unknown>;
   return ('spaces' in d && 'nodes' in d && 'state' in d && 'data_sources' in d);
+}
+
+/**
+ * True when the document is entirely 2D: every space is 2D (orthographic,
+ * no camera) and no node is 3D-only. Consumers use this to assert the
+ * "fixed 2D, no camera" web path. See docs/CONTRACT.md §18.
+ */
+export function is2DSceneDocument(doc: SceneDocument): boolean {
+  if (doc.spaces.some(s => SPACE_DIMENSIONS[s.type] === '3d' || s.projection === 'perspective')) {
+    return false;
+  }
+  const has3DNode = (nodes: SceneNode[]): boolean =>
+    nodes.some(n => NODE_DIMENSIONS[n.type] === '3d' || has3DNode(n.children));
+  return !has3DNode(doc.nodes);
 }
 
 // ── Internal render dispatcher (legacy Visual) ──────────────────────────────

@@ -1,5 +1,6 @@
 import type { RendererContext } from '../types.js';
 import type { Form, Field } from '../types.js';
+import { resolveRefs } from '../state.js';
 
 export function renderForm(spec: Form, ctx: RendererContext): HTMLElement {
   const el = document.createElement('div');
@@ -13,6 +14,14 @@ export function renderForm(spec: Form, ctx: RendererContext): HTMLElement {
   return el;
 }
 
+/** Resolve a field's bound value from state, or `undefined` if unresolved. */
+function resolveBind(bind: string | undefined, state: Record<string, unknown>): unknown | undefined {
+  if (!bind) return undefined;
+  const resolved = resolveRefs('$' + bind, state, {});
+  if (typeof resolved === 'string' && resolved.startsWith('$')) return undefined;
+  return resolved;
+}
+
 function renderField(field: Field, ctx: RendererContext): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.className = 'exd-form-field';
@@ -24,9 +33,14 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
     wrapper.appendChild(lbl);
   }
 
+  // Bound value (from state) takes precedence over the static field value.
+  const bound = resolveBind(field.bind, ctx.getState());
+  const initial = bound !== undefined ? bound : field.value;
+
   const emit = (value: unknown) => {
     const action = field.action ?? `field:${field.name}`;
     ctx.emit(action, { name: field.name, value });
+    if (field.bind) ctx.setState(field.bind, value);
   };
 
   switch (field.type) {
@@ -34,7 +48,7 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
       const input = document.createElement('input');
       input.className = 'exd-form-input';
       input.type = 'number';
-      if (field.value !== undefined) input.value = String(field.value);
+      if (initial !== undefined) input.value = String(initial);
       if (field.min !== undefined) input.min = String(field.min);
       if (field.max !== undefined) input.max = String(field.max);
       if (field.step !== undefined) input.step = String(field.step);
@@ -46,7 +60,7 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
       const input = document.createElement('input');
       input.className = 'exd-form-input';
       input.type = 'text';
-      if (field.value !== undefined) input.value = String(field.value);
+      if (initial !== undefined) input.value = String(initial);
       input.addEventListener('input', () => emit(input.value));
       wrapper.appendChild(input);
       break;
@@ -55,7 +69,7 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
       const row = document.createElement('div');
       row.className = 'exd-form-field-row';
 
-      const realPart = typeof field.value === 'number' ? field.value : 0;
+      const realPart = typeof initial === 'number' ? initial : 0;
       const imagPart = 0;
       const re = document.createElement('input');
       re.className = 'exd-form-input';
@@ -96,7 +110,7 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
       for (const opt of field.options ?? []) {
         const o = document.createElement('option');
         o.value = o.textContent = opt;
-        if (opt === String(field.value)) o.selected = true;
+        if (opt === String(initial)) o.selected = true;
         sel.appendChild(o);
       }
       sel.addEventListener('change', () => emit(sel.value));
@@ -108,7 +122,7 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
       cbRow.className = 'exd-form-checkbox';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      if (field.value === true) cb.checked = true;
+      if (initial === true) cb.checked = true;
       cb.addEventListener('change', () => emit(cb.checked));
       cbRow.appendChild(cb);
       const span = document.createElement('span');
@@ -127,7 +141,7 @@ function renderField(field: Field, ctx: RendererContext): HTMLElement {
       range.min = String(field.min ?? 0);
       range.max = String(field.max ?? 100);
       range.step = String(field.step ?? 1);
-      range.value = String(field.value ?? 50);
+      range.value = String(initial ?? 50);
       const val = document.createElement('span');
       val.style.fontSize = '12px';
       val.style.color = '#a0a0c0';

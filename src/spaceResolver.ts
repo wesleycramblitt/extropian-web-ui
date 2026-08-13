@@ -1,11 +1,11 @@
 // Maps SceneNode.space references to CSS coordinate transforms.
 // For DOM-based rendering, spaces affect layout (position, size,
 // overflow behavior) rather than actual 3D transforms.
-import type { Space, SpaceLayout, SceneNode } from './types.js';
+import type { Space, SpaceLayout, SpaceType, SceneNode } from './types.js';
 
 export interface ResolvedSpace {
   id: string;
-  type: string;
+  type: SpaceType;
   cssPosition: 'relative' | 'absolute' | 'static';
   cssLeft: string;
   cssTop: string;
@@ -110,27 +110,25 @@ export function createSpaceContainer(
 }
 
 /**
- * Walk nodes and return them grouped by space.
+ * Walk top-level nodes and return them grouped by space.
+ *
+ * Children are intentionally NOT walked: in the 2D backend, scene-graph
+ * nesting = DOM nesting — a node's children render inline inside their
+ * parent (Panel/Group adapters). Recurse into children here and they'd be
+ * rendered twice (once by the parent, once by the space loop).
  */
 export function groupNodesBySpace(nodes: SceneNode[]): Map<string, SceneNode[]> {
   const groups = new Map<string, SceneNode[]>();
 
-  function walk(nodeList: SceneNode[]): void {
-    for (const node of nodeList) {
-      const spaceId = node.space;
-      let group = groups.get(spaceId);
-      if (!group) {
-        group = [];
-        groups.set(spaceId, group);
-      }
-      group.push(node);
-      // Recurse into children (they might be in different spaces)
-      if (node.children.length > 0) {
-        walk(node.children);
-      }
+  for (const node of nodes) {
+    const spaceId = node.space;
+    let group = groups.get(spaceId);
+    if (!group) {
+      group = [];
+      groups.set(spaceId, group);
     }
+    group.push(node);
   }
 
-  walk(nodes);
   return groups;
 }

@@ -8,7 +8,7 @@
 > Legacy `Visual`/`VisualDoc` types retained as `@deprecated`.
 >
 > AI-emitted declarative JSON → interactive DOM.
-> One contract, two backends (TypeScript DOM + C++ OpenGL), shared JSON fixtures.
+> One contract, two backends (TypeScript DOM + C++ OpenGL).
 
 ---
 
@@ -293,7 +293,11 @@ interface View {
 
 `on('*', handler)` subscribes to all action events (wildcard).
 
-`setState("A[0][0]", 3)` re-evaluates derived values, re-resolves all `$ref`s, and re-renders the entire document.
+`setState("A[0][0]", 3)` writes the value, then re-renders only the nodes that
+depend on the changed state key (targeted update). For a `SceneDocument` this
+preserves in-progress interactions — e.g. dragging a bound range slider updates
+the dependent nodes without tearing down the slider itself. Legacy `VisualDoc`
+keeps full re-resolve + re-render (it has a `derive` pass).
 
 ---
 
@@ -485,16 +489,25 @@ Live at `http://localhost:3000`. Features:
 
 | Preset | Format | Highlights |
 |--------|--------|-----------|
+| SD · Navier–Stokes | **SceneDocument** | the only preset in the canonical `SceneDocument` shape (spaces/nodes/interaction/style) |
 | Eigenvalues (full doc) | VisualDoc | state + derive + split layout + semantic + annotations |
 | State + Cartesian2D | VisualDoc | state + derive + row layout + chart showing A·unit_circle |
 | Dashboard + Tabs | VisualDoc | tabs layout with equation view + chart view |
-| Navier–Stokes | Visual | math display-mode equations |
-| Line Chart | Visual | d3 line chart with 2 series |
-| Scatter Plot | Visual | d3 scatter with Re vs Cd |
-| Heatmap | Visual | d3 color-scale heatmap |
-| Force Graph | Visual | d3-force draggable nodes |
-| Form + Complex Input | Visual | all field types incl. complex number |
-| Correlation Matrix | Visual | labeled matrix table |
+| Navier–Stokes (flat) | Visual | math display-mode equations |
+| Line Chart (flat) | Visual | d3 line chart with 2 series |
+| Scatter Plot (flat) | Visual | d3 scatter with Re vs Cd |
+| Heatmap (flat) | Visual | d3 color-scale heatmap |
+| Force Graph (flat) | Visual | d3-force draggable nodes |
+| Form + Complex Input (flat) | Visual | all field types incl. complex number |
+| Correlation Matrix (flat) | Visual | labeled matrix table |
+
+Only "SD · Navier–Stokes" uses the genuine `SceneDocument` format — every
+other preset predates it and uses the older flat `Visual`/`VisualDoc`
+shapes, which lack `style`/`interaction` entirely. Even the SD preset sets
+`interaction` all-false and `style` at defaults (one node uses
+`emphasis: 'subtle'`) on every node, so there is currently no preset that
+demonstrates AI-driven style/interaction producing visibly different
+rendering.
 
 ---
 
@@ -534,6 +547,13 @@ Deprecated GL/WASM files (`src/gl/`, `src/wasm/`, `wasm/`) remain in the repo bu
 - Presentation state (highlights, isolation, annotations)
 - Playground with focus inspection and state display
 - 10 presets covering both formats
+- Table-driven 2D/3D document model (`SPACE_DIMENSIONS`, `NODE_DIMENSIONS`) with
+  render-time placement validation and `is2DSceneDocument()` (see §18)
+- SceneDocument reactivity: `$ref` resolution against `state` at render time,
+  and `setState()` re-renders the scene tree (see §19)
+- DataBinding: `SceneNode.data.bind` (+ `path`) injects a bound value into the
+  node's primary content field; bound form fields read/write `state` two-way
+  (see §19)
 
 ### Types defined, rendering deferred
 - 20 control types (sliders, matrix_editor, play_pause, etc.)
@@ -541,13 +561,78 @@ Deprecated GL/WASM files (`src/gl/`, `src/wasm/`, `wasm/`) remain in the repo bu
 - AI mutation contract (14 mutation operations)
 - AIResponse envelope
 
+### Deferred to the 3D renderer
+- 3D-only node types (`Mesh`, `Volume`, `Viewport`) and 3D spaces
+  (`viewport3d`, `world3d`) render as placeholders until the 3D backend lands.
+  The 2D/3D split (orthographic = 2D, perspective = 3D) is the seam where that
+  backend attaches.
 
-## 18. Unified SceneDocument TypeScript Interface (IMPLEMENTED — v0.3)
 
-> **Authoritative type definition:** C++ structs in `extropian-semantic-to-visual/compiler/docs/compiler-plan.md` §12.
-> **Canonical headers** (`include/exd/types/`): not yet created — the `compiler-plan.md` is the spec.
+## 18. 2D vs 3D document model
+
+One `SceneDocument` covers both a web-native 2D UI and a 3D scene graph.
+Dimensionality is **table-driven** — no extra schema fields. A node's
+dimension comes from its `type`; a space's comes from its `type` +
+`projection`.
+
+### The switch: space projection
+
+`Space.projection` selects the rendering backend:
+
+| projection | Meaning | Web backend |
+|------------|---------|-------------|
+| `orthographic` | Fixed 2D canvas — no camera | Native DOM/CSS + d3 SVG ✅ |
+| `perspective` | Camera-based 3D view | Placeholder until the 3D renderer lands ⏳ |
+
+**Web-first policy:** orthographic 2D spaces are the primary web path; 3D
+spaces render as placeholders until 3D components are added.
+
+### Space dimensionality
+
+| SpaceType | Dimension | Camera |
+|-----------|-----------|--------|
+| `screen` | 2D | unused |
+| `panel` | 2D | unused |
+| `cartesian2d` | 2D | unused |
+| `overlay` | 2D | unused |
+| `viewport3d` | 3D | required |
+| `world3d` | 3D | required |
+
+### Node dimensionality
+
+| Dimension | NodeTypes | Notes |
+|-----------|-----------|-------|
+| `2d` | `Panel`, `Text`, `Code`, `Equation`, `Matrix`, `Plot`, `Table`, `Form`, `Button`, `Image` | Web-native UI/UX + d3 SVG |
+| `both` | `Label`, `Vector`, `Curve`, `Graph`, `Group` | Same concept, per-backend geometry (`Label` = billboard text in 3D) |
+| `3d` | `Mesh`, `Volume`, `Viewport` | 3D-only; placeholder in the web backend |
+
+The tables live in `src/types.ts` as the `SPACE_DIMENSIONS` and
+`NODE_DIMENSIONS` constants — the single source of truth for both the
+runtime and this document.
+
+### Placement rules
+
+Validated at render time (`renderSceneNode` + the space loop):
+
+| Node | Space | Behavior |
+|------|-------|----------|
+| 2D / both | 2D | Native DOM/SVG render ✅ |
+| 3D | 2D | Node placeholder + `console.warn` ⏳ |
+| any | 3D | Whole-space placeholder + `console.warn` (nodes are not individually rendered; billboarded 2D-in-3D is a future path) ⏳ |
+
+`is2DSceneDocument(doc)` returns `true` when every space is 2D (orthographic,
+no camera) and no 3D node is present, so consumers can assert the "entirely 2D, no camera" web path.
+
+---
+
+## 19. Unified SceneDocument TypeScript Interface (IMPLEMENTED — v0.3)
+
+> **Authoritative type definition:** C++ structs in `extropian-core/include/exd/types/`
+> (`scene_document.hpp`, `presentation_state.hpp`) — the `compiler-plan.md` §12 is the
+> documented copy of that spec.
+> **Canonical headers:** `extropian-core/include/exd/types/` (created).
 > **This file:** TypeScript mirror consuming the same JSON format.
-> **When to update:** Whenever the C++ structs change, update `src/types.ts` and re-run shared fixture tests.
+> **When to update:** Whenever the C++ structs change, update `src/types.ts` to keep the mirror aligned.
 
 ### Naming convention note
 
@@ -557,16 +642,17 @@ etc.).  Our TypeScript mirror prefixes them with `Scene` (`SceneRelation`,
 `@deprecated` types that share the same names.  JSON wire format is
 unaffected — only TypeScript type names differ.
 
-### ⚠️ Open: SpaceType enum serialization
+### SpaceType serialization convention
 
 The C++ `enum class SpaceType` has PascalCase values (`Screen`, `Panel`,
-`Cartesian2D`, `Viewport3D`, `World3D`, `Overlay`).  Our TS mirror uses
-lowercase strings (`'screen'`, `'panel'`, …).  The JSON wire format depends
-on the C++ `NLOHMANN_JSON_SERIALIZE_ENUM` configuration, which is not yet
-specified.  **Confirm with the C++ team before fixture testing.**
+`Cartesian2D`, `Viewport3D`, `World3D`, `Overlay`); our TS mirror uses
+lowercase strings (`'screen'`, `'panel'`, …) as the JSON wire convention.
+The C++ `NodeType` enum uses PascalCase strings in both.
 
-The C++ `NodeType` enum (PascalCase: `Panel`, `Text`, …) matches our TS
-PascalCase strings, so that is aligned regardless.
+> **Note on the mirror relationship:** `src/types.ts` is a hand-kept mirror
+> of the C++ structs in `extropian-core/include/exd/types/`. There is no
+> shared-fixture test harness between the two backends — the TypeScript side
+> evolves independently and stays aligned by review.
 
 ---
 
@@ -652,7 +738,7 @@ export interface DataBinding {
 
 export interface NodeSemantic {
     role: string;
-    concept: string;
+    concept_id: string;    // renamed from 'concept' — matches C++ (C++20 keyword conflict)
     kind: string;
     explanation: string;
     tags: string[];
@@ -673,7 +759,26 @@ export interface NodeStyle {
     depth: number;
     visible: boolean;
 }
+```
 
+> **Implementation status (`NodeInteraction`):** these 6 booleans are the
+> correct schema mirror of the C++ struct, but only half of them are wired
+> to any behavior. `render.ts#applySceneNodeAttrs()` reads `select`,
+> `focus`, and `inspect` — and only to set `cursor: pointer` + `tabIndex = 0`
+> on the element. `hover`, `drag`, and `edit` are not consulted anywhere
+> else in the codebase. `interactionToLegacy()` flattens all 6 into a
+> `data-interaction` string array that nothing downstream reads. The only
+> node types with genuinely interactive DOM behavior are `Button`
+> (`button.ts`, real click handler) and `Graph` (`graph.ts`, real d3-force
+> drag) — and neither of those actually gates on `node.interaction`; the
+> behavior is unconditional. Every other node type (Panel, Text, Equation,
+> Matrix, Table, Image, Label, and the 3D placeholders) has no interaction
+> wiring at all.
+>
+> **`NodeStyle.depth`** is defined here to mirror the C++ struct but is
+> never read anywhere in this codebase — it is currently a dead field.
+
+```typescript
 export interface SceneNode {
     id: string;
     type: NodeType;
@@ -718,9 +823,15 @@ export interface CameraOverride {
 }
 
 export interface StyleOverride {
-    emphasis: string;
+    emphasis: 'subtle' | 'default' | 'primary' | 'prominent';  // canonical vocabulary (see note below)
     opacity: number;
 }
+
+> **Emphasis vocabulary (unified):** `subtle | default | primary | prominent`
+> is the single canonical emphasis scale across `NodeStyle.emphasis` and
+> `StyleOverride.emphasis` (C++ `scene_document.hpp` + `presentation_state.hpp`
+> use the same strings). Runtime overrides default to `subtle` (dim), usually
+> paired with low `opacity`.
 
 export interface SceneAnnotation {
     id: string;
@@ -822,6 +933,11 @@ dispatches to registered renderers:
 | `Mesh` | Placeholder — deferred to v0.2 WASM | ⏳ |
 | `Volume` | Placeholder — deferred to v0.2 WASM | ⏳ |
 | `Viewport` | Placeholder — deferred to v0.2 WASM | ⏳ |
+
+"ALL IMPLEMENTED" above refers strictly to content/geometry dispatch — each
+`NodeType` reaches a real component renderer. It does **not** mean
+`node.interaction` drives behavior; see the implementation-status note under
+`NodeInteraction` above for what is and isn't wired.
 
 ### New Modules Added (v0.3)
 
