@@ -85,6 +85,10 @@ const CSS = `
   .exd-legend-size-item { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 10px; color: #8080b0; }
   .exd-legend-size-circle { display: inline-block; border-radius: 50%; background: #4a9eff; }
 
+  /* Hover-highlight: the hovered node, its neighbors, and incident edges. */
+  [data-exd-hovered] { outline: 1px solid #4a9eff; outline-offset: 1px; }
+  svg path[data-exd-hovered] { stroke: #4a9eff; stroke-width: 2.5; }
+
   .exd-form { display: flex; flex-direction: column; gap: 10px; }
   .exd-form-field { display: flex; flex-direction: column; gap: 4px; }
   .exd-form-field-row { display: flex; align-items: center; gap: 8px; }

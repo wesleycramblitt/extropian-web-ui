@@ -937,6 +937,10 @@ export interface DiagramLayout {
     algorithm: LayoutAlgorithm;
     size_by?: ChannelSpec;       // treemap/pack: channel driving area
     color_by?: ChannelSpec;
+    lane_by?: ChannelSpec;       // swimlane: channel grouping nodes into lanes
+    time_by?: ChannelSpec;       // timeline: channel positioning nodes on the time axis
+    start_by?: ChannelSpec;      // timeline (gantt): channel for bar start
+    end_by?: ChannelSpec;        // timeline (gantt): channel for bar end
     params: Record<string, unknown>;   // orientation, rankdir, gap, ...
 }
 ```
@@ -949,13 +953,18 @@ Semantics:
   `scales[]` — e.g. "code size → box area, complexity → color" — so a single
   scale gives one consistent meaning + legend across the whole document.
 - `SceneNode.ports` + `SceneRelation.source_port`/`target_port` anchor edges to
-  node sides instead of centers.
+  node sides instead of centers (elbow/bezier/tube/line routing).
+- `SceneRelation.bundle` marks a relation as representing N logical edges —
+  rendered thicker with a `×N` label (e.g. a warp's 32 lanes).
 - `Space.arrangement` positions child nodes. All ten algorithms are implemented:
-  `manual`, `grid`, `layered` (Sugiyama-style ranks), `tree`, `radial`, `force`
-  (d3-force, sync ticks), `treemap` (squarified), `pack` (d3 circle packing),
-  `swimlane` (`lane_by`), and `timeline` (`time_by`). `tree`/`radial` flatten
-  nested `children` into absolutely-positioned nodes; the rest lay out the
-  space's top-level nodes.
+  `manual`, `grid`, `layered` (Sugiyama ranks + barycenter), `tree`, `radial`,
+  `force` (d3-force, sync ticks), `treemap` (squarified), `pack` (d3 circle
+  packing), `swimlane` (`lane_by`), and `timeline` (point-in-time `time_by`, or
+  gantt bars with `start_by`/`end_by`). `tree`/`radial` flatten nested
+  `children` into absolutely-positioned nodes; the rest lay out the space's
+  top-level nodes.
+- **Hover interaction**: hovering a node highlights it, its neighbors, and its
+  incident edges (via `data-exd-hovered`).
 
 ### Node Type Geometry & Content by Type
 

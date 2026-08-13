@@ -169,6 +169,18 @@ describe('Extended diagram layouts', () => {
     );
     expect(boxes.get('a')!.x).toBeLessThan(boxes.get('b')!.x);
   });
+
+  it('timeline gantt stacks overlapping bars into separate lanes', () => {
+    const nodes = [node({ id: 'a', type: 'Shape' }), node({ id: 'b', type: 'Shape' }), node({ id: 'c', type: 'Shape' })];
+    const boxes = computeDiagramLayout(
+      { algorithm: 'timeline', start_by: { source: 'start' }, end_by: { source: 'end' }, params: {} },
+      nodes, { start: { a: 0, b: 5, c: 10 }, end: { a: 20, b: 15, c: 30 } }, new Map(), { width: 400, height: 200 },
+    );
+    // a[0,20], b[5,15], c[10,30] all mutually overlap → three distinct lanes.
+    const ys = new Set([boxes.get('a')!.y, boxes.get('b')!.y, boxes.get('c')!.y]);
+    expect(ys.size).toBe(3);
+    expect(boxes.get('a')!.width).toBeGreaterThan(0);
+  });
 });
 
 describe('Legend', () => {

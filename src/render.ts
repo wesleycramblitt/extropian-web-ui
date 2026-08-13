@@ -1,5 +1,5 @@
 import type {
-  Visual, SceneNode, SceneDocument, View, ViewDef, VisualDoc,
+  Visual, SceneNode, SceneDocument, SceneRelation, View, ViewDef, VisualDoc,
   ResolvedDoc, ResolvedView, RendererContext, RendererFn, FocusState, Layout,
   NodeBase, Custom, NodeType, ScaleDef, Port,
 } from './types.js';
@@ -500,10 +500,19 @@ class ViewImpl implements View {
   private _deps = new Map<string, Set<string>>();
   /** Named visual scales from SceneDocument.scales (for encoding resolution). */
   private _scales = new Map<string, ScaleDef>();
+  /** Relations from the document, for hover-highlight + edge anchoring. */
+  private _relations: SceneRelation[] = [];
+  private _hoveredId: string | null = null;
+  private _onHover = (e: MouseEvent): void => this._handleHover(e);
+  private _onHoverLeave = (): void => this._clearHover();
 
   constructor(container: HTMLElement, input: Visual | VisualDoc | SceneDocument) {
     this._container = container;
     container.innerHTML = '';
+
+    // Delegated hover-highlight (nodes + their incident edges/neighbors).
+    container.addEventListener('mouseover', this._onHover);
+    container.addEventListener('mouseleave', this._onHoverLeave);
 
     if (isSceneDocument(input)) {
       this._sceneDoc = input as SceneDocument;
@@ -618,6 +627,44 @@ class ViewImpl implements View {
     this._container.innerHTML = '';
     this._handlers.clear();
     this._focus = {};
+    this._container.removeEventListener('mouseover', this._onHover);
+    this._container.removeEventListener('mouseleave', this._onHoverLeave);
+  }
+
+  // ── Hover-highlight (interaction) ─────────────────────────────────────────
+
+  private _handleHover(e: MouseEvent): void {
+    const target = (e.target as Element).closest?.('[data-exd-id]') as HTMLElement | null;
+    const id = target?.getAttribute('data-exd-id') ?? null;
+    if (id === this._hoveredId) return;
+    this._hoveredId = id;
+    this._clearHover();
+    if (id) this._applyHover(id);
+  }
+
+  private _applyHover(id: string): void {
+    this._setHover(id, true);
+    for (const rel of this._relations) {
+      if (rel.source === id || rel.target === id) {
+        this._setHover(rel.source, true);
+        this._setHover(rel.target, true);
+        this._container.querySelectorAll(`[data-rel-id="${rel.id}"]`)
+          .forEach(p => p.setAttribute('data-exd-hovered', 'true'));
+      }
+    }
+  }
+
+  private _setHover(id: string, on: boolean): void {
+    const el = this.find(id);
+    if (el) {
+      if (on) el.setAttribute('data-exd-hovered', 'true');
+      else el.removeAttribute('data-exd-hovered');
+    }
+  }
+
+  private _clearHover(): void {
+    this._container.querySelectorAll('[data-exd-hovered]')
+      .forEach(el => el.removeAttribute('data-exd-hovered'));
   }
 
   // ── Internal: SceneDocument rendering ────────────────────────────────────
@@ -697,6 +744,7 @@ class ViewImpl implements View {
   private _renderSceneDocument(): void {
     if (!this._sceneDoc) return;
     const doc = this._sceneDoc;
+    this._relations = doc.relations ?? [];
     this._container.innerHTML = '';
     clearPresentationState(this._container);
 
@@ -1039,7 +1087,8 @@ export function renderSceneRelations(
 
     const type = rel.style.type ?? 'arrow';
     const color = rel.style.color ?? '#4a9eff';
-    const width = rel.style.width ?? 2;
+    const bundle = rel.bundle ?? 1;
+    const width = (rel.style.width ?? 2) * (bundle > 1 ? Math.min(1 + Math.log2(bundle), 3) : 1);
     const dash = rel.style.dash ? '8,4' : 'none';
     const isArrow = type === 'arrow' || type === 'line';
     const markerEnd = isArrow ? (dash === 'none' ? 'url(#exd-arrowhead)' : 'url(#exd-arrowhead-dashed)') : 'none';
@@ -1059,8 +1108,11 @@ export function renderSceneRelations(
     path.setAttribute('data-rel-target', rel.target);
     svg.appendChild(path);
 
-    // Label at midpoint
-    if (rel.label?.text) {
+    // Label at midpoint (bundled edges show "×N")
+    const labelText = bundle > 1
+      ? (rel.label?.text ? `${rel.label.text} ×${bundle}` : `×${bundle}`)
+      : rel.label?.text;
+    if (labelText) {
       const mx = (x1 + x2) / 2;
       const my = (y1 + y2) / 2;
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -1070,7 +1122,7 @@ export function renderSceneRelations(
       text.setAttribute('fill', '#8080b0');
       text.setAttribute('font-size', '10');
       text.setAttribute('font-family', 'Inter, sans-serif');
-      text.textContent = rel.label.text;
+      text.textContent = labelText;
       svg.appendChild(text);
     }
   }

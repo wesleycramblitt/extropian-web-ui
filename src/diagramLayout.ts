@@ -298,7 +298,31 @@ function timelineLayout(
   if (nodes.length === 0) return out;
   const params = layout.params as Record<string, unknown>;
   const pad = num(params.pad, 48);
-  const nodeH = num(params.node_height, 50);
+  const barH = num(params.node_height, 22);
+  const gap = num(params.gap, 6);
+
+  // Gantt mode: bars spanning [start_by, end_by], stacked into lanes.
+  if (layout.start_by && layout.end_by) {
+    const entries = nodes.map(n => ({
+      id: n.id,
+      start: num(resolveChannel(layout.start_by, scope, scales, n.id), 0),
+      end: num(resolveChannel(layout.end_by, scope, scales, n.id), 0),
+    }));
+    const tmin = Math.min(...entries.map(e => e.start), 0);
+    const tmax = Math.max(...entries.map(e => e.end), 1);
+    const span = (tmax - tmin) || 1;
+    const X = (t: number): number => pad + ((t - tmin) / span) * (area.width - 2 * pad);
+    const lanes: number[] = []; // per-lane last end time
+    for (const e of entries.sort((a, b) => a.start - b.start)) {
+      let lane = lanes.findIndex(lastEnd => lastEnd <= e.start);
+      if (lane === -1) { lane = lanes.length; lanes.push(0); }
+      lanes[lane] = e.end;
+      out.set(e.id, { x: X(e.start), y: lane * (barH + gap), width: Math.max(X(e.end) - X(e.start), 2), height: barH });
+    }
+    return out;
+  }
+
+  // Point-in-time dot plot.
   const entries = nodes.map(n => ({ id: n.id, t: num(resolveChannel(layout.time_by, scope, scales, n.id), 0) }));
   const times = entries.map(e => e.t);
   const tmin = Math.min(...times, 0);
@@ -307,7 +331,7 @@ function timelineLayout(
   const y = num(params.y, 40);
   for (const e of entries) {
     const x = pad + ((e.t - tmin) / span) * (area.width - 2 * pad);
-    out.set(e.id, { x, y, width: num(params.dot_width, 10), height: nodeH });
+    out.set(e.id, { x, y, width: num(params.dot_width, 10), height: barH });
   }
   return out;
 }

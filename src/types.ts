@@ -119,6 +119,10 @@ export interface DiagramLayout {
   lane_by?: ChannelSpec;
   /** timeline: channel positioning nodes on the time axis. */
   time_by?: ChannelSpec;
+  /** timeline (gantt): channel for bar start. */
+  start_by?: ChannelSpec;
+  /** timeline (gantt): channel for bar end. */
+  end_by?: ChannelSpec;
   /** Algorithm-specific params: orientation, rankdir, gap, cols, node_width, … */
   params: Record<string, unknown>;
 }
@@ -272,6 +276,8 @@ export interface SceneRelation {
   style: SceneRelationStyle;
   label?: { text: string; position: 'start' | 'middle' | 'end' };
   semantic?: { kind: string };
+  /** Number of logical edges this represents (e.g. a warp's 32 lanes). */
+  bundle?: number;
 }
 
 // ── Presentation state (v1.0) ───────────────────────────────────────────────
