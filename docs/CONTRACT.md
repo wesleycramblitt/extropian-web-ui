@@ -406,6 +406,12 @@ Structured events (subscribe via `view.on(name, handler)` or the `'*'` wildcard)
 | `hover:change` | `{ entity }` |
 | `mutations:applied` | `{ patch, presentation }` |
 
+**Local interaction (no AI):** hover-highlight, click/shift-click selection, and
+drag are all **gated on `NodeInteraction` flags** (defaults `hover/select/focus/
+inspect = true`, `drag/edit = false`). Dragging moves absolutely-positioned
+nodes (manual/arranged layouts) and commits the new position to
+`transform.position` on mouseup.
+
 ---
 
 ## 10. Controls (types defined)

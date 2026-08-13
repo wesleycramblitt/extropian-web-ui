@@ -114,3 +114,56 @@ describe('getContext', () => {
     expect(ctx.state.A).toBe(5);
   });
 });
+
+describe('Drag', () => {
+  function arrangedDoc() {
+    const doc = baseDoc();
+    doc.spaces.push({ id: 'canvas', type: 'cartesian2d', projection: 'orthographic', background: '#000', scroll: false, arrangement: { algorithm: 'manual', params: {} } });
+    return doc;
+  }
+
+  it('drags a manual-layout node with drag:true', () => {
+    const doc = arrangedDoc();
+    doc.nodes.push(node({
+      id: 'd', type: 'Shape', space: 'canvas',
+      interaction: { hover: true, select: true, drag: true, focus: true, inspect: true, edit: false },
+    }));
+    const view = render(doc, container());
+    const el = view.find('d')!;
+    expect(el.style.position).toBe('absolute');
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 0, clientY: 0 }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 50, clientY: 25 }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    expect(el.style.left).toBe('50px');
+    expect(el.style.top).toBe('25px');
+  });
+
+  it('does not drag a node with drag:false', () => {
+    const doc = arrangedDoc();
+    doc.nodes.push(node({ id: 'd', type: 'Shape', space: 'canvas' })); // drag false by default
+    const view = render(doc, container());
+    const el = view.find('d')!;
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 0, clientY: 0 }));
+    document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 50, clientY: 25 }));
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    expect(el.style.left).toBe('0px');
+  });
+});
+
+describe('Interaction gating', () => {
+  it('does not hover-highlight a node with hover:false', () => {
+    const doc = baseDoc();
+    doc.nodes.push(node({ id: 'h', type: 'Shape', interaction: { hover: false, select: true, drag: false, focus: true, inspect: true, edit: false } }));
+    const view = render(doc, container());
+    view.find('h')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    expect(view.find('h')!.getAttribute('data-exd-hovered')).toBeNull();
+  });
+
+  it('does not select a node with select:false', () => {
+    const doc = baseDoc();
+    doc.nodes.push(node({ id: 's', type: 'Shape', interaction: { hover: true, select: false, drag: false, focus: true, inspect: true, edit: false } }));
+    const view = render(doc, container());
+    view.find('s')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(view.getFocus().selection).toEqual([]);
+  });
+});

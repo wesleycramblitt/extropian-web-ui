@@ -20,7 +20,8 @@ export function baseDoc(): SceneDocument {
 export function node(partial: Partial<SceneNode> & { id: string; type: NodeType }): SceneNode {
   return {
     space: 'screen',
-    interaction: { hover: false, select: false, drag: false, focus: false, inspect: false, edit: false },
+    // Match the C++ NodeInteraction defaults (hover/select/focus/inspect on, drag/edit off).
+    interaction: { hover: true, select: true, drag: false, focus: true, inspect: true, edit: false },
     style: { emphasis: 'default', opacity: 1, depth: 0, visible: true },
     geometry: {},
     content: {},

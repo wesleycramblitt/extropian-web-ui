@@ -528,7 +528,7 @@ class ViewImpl implements View {
   private _sceneDoc: SceneDocument | null = null;
   private _state: Record<string, unknown> = {};
   private _derived: Record<string, unknown> = {};
-  private _focus: FocusState = {};
+  private _focus: FocusState = { selection: [] };
   /** Reactive dependency map: top-level state key → set of node ids that reference it. */
   private _deps = new Map<string, Set<string>>();
   /** Named visual scales from SceneDocument.scales (for encoding resolution). */
@@ -539,6 +539,10 @@ class ViewImpl implements View {
   private _onHover = (e: MouseEvent): void => this._handleHover(e);
   private _onHoverLeave = (): void => this._clearHover();
   private _onClick = (e: MouseEvent): void => this._handleClick(e);
+  private _onMouseDown = (e: MouseEvent): void => this._handleMouseDown(e);
+  private _onMouseMove = (e: MouseEvent): void => this._handleMouseMove(e);
+  private _onMouseUp = (): void => this._endDrag();
+  private _dragState: { id: string; startX: number; startY: number; origLeft: number; origTop: number } | null = null;
   /** Mutable presentation state (AI mutations are applied here). */
   private _presentation: ScenePresentationState = emptyPresentation();
 
@@ -551,6 +555,10 @@ class ViewImpl implements View {
     container.addEventListener('mouseleave', this._onHoverLeave);
     // Delegated click selection (single / shift-toggle / clear).
     container.addEventListener('click', this._onClick);
+    // Drag (mousedown starts; move/up tracked globally so drag can leave the container).
+    container.addEventListener('mousedown', this._onMouseDown);
+    document.addEventListener('mousemove', this._onMouseMove);
+    document.addEventListener('mouseup', this._onMouseUp);
 
     if (isSceneDocument(input)) {
       this._sceneDoc = input as SceneDocument;
@@ -667,6 +675,9 @@ class ViewImpl implements View {
     this._container.removeEventListener('mouseover', this._onHover);
     this._container.removeEventListener('mouseleave', this._onHoverLeave);
     this._container.removeEventListener('click', this._onClick);
+    this._container.removeEventListener('mousedown', this._onMouseDown);
+    document.removeEventListener('mousemove', this._onMouseMove);
+    document.removeEventListener('mouseup', this._onMouseUp);
   }
 
   // ── Hover-highlight (interaction) ─────────────────────────────────────────
@@ -678,8 +689,16 @@ class ViewImpl implements View {
     this._hoveredId = id;
     this._focus.hover = id ?? undefined;
     this._clearHover();
-    if (id) this._applyHover(id);
+    if (id) {
+      const node = this._nodeById(id);
+      if (!node || node.interaction.hover) this._applyHover(id);
+    }
     this._dispatch('hover:change', { entity: id });
+  }
+
+  /** Look up a node by id in the current document tree. */
+  private _nodeById(id: string): SceneNode | null {
+    return findSceneNodeById(this._sceneDoc?.nodes ?? [], id);
   }
 
   private _applyHover(id: string): void {
@@ -716,6 +735,8 @@ class ViewImpl implements View {
     let selection: string[];
     let focus: string | undefined;
     if (id) {
+      const node = this._nodeById(id);
+      if (node && node.interaction.select === false) return; // not selectable
       if (additive) {
         const prev = this._focus.selection ?? [];
         selection = prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id];
@@ -741,6 +762,52 @@ class ViewImpl implements View {
       const el = this.find(id);
       if (el) el.setAttribute('data-exd-selected', 'true');
     }
+  }
+
+  // ── Drag (interaction) ────────────────────────────────────────────────────
+
+  private _handleMouseDown(e: MouseEvent): void {
+    const target = (e.target as Element).closest?.('[data-exd-id]') as HTMLElement | null;
+    const id = target?.getAttribute('data-exd-id') ?? null;
+    if (!id) return;
+    const node = this._nodeById(id);
+    if (!node || !node.interaction.drag) return;
+    const el = this.find(id);
+    if (!el || el.style.position !== 'absolute') return; // only arranged nodes are draggable
+    this._dragState = {
+      id,
+      startX: e.clientX,
+      startY: e.clientY,
+      origLeft: parseFloat(el.style.left) || 0,
+      origTop: parseFloat(el.style.top) || 0,
+    };
+    e.preventDefault();
+  }
+
+  private _handleMouseMove(e: MouseEvent): void {
+    if (!this._dragState) return;
+    const el = this.find(this._dragState.id);
+    if (!el) return;
+    const dx = e.clientX - this._dragState.startX;
+    const dy = e.clientY - this._dragState.startY;
+    el.style.left = `${this._dragState.origLeft + dx}px`;
+    el.style.top = `${this._dragState.origTop + dy}px`;
+  }
+
+  private _endDrag(): void {
+    if (!this._dragState) return;
+    const node = this._nodeById(this._dragState.id);
+    const el = this.find(this._dragState.id);
+    if (node && el) {
+      const left = parseFloat(el.style.left) || 0;
+      const top = parseFloat(el.style.top) || 0;
+      const position = node.transform?.position ?? [0, 0, 0];
+      node.transform = {
+        ...(node.transform ?? { rotation: [0, 0, 0, 1], scale: [1, 1, 1], anchor: 'center' }),
+        position: [left, top, position[2] ?? 0],
+      };
+    }
+    this._dragState = null;
   }
 
   /** Dispatch an action event to registered handlers (+ wildcard). */
