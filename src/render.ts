@@ -400,7 +400,9 @@ function findSceneNodeById(nodes: SceneNode[], id: string): SceneNode | null {
 /** Parse a CSS dimension string ("600", "600px", "50%") to a number, or fallback. */
 function parseDim(v: string | undefined, fallback: number): number {
   if (!v) return fallback;
-  const n = parseFloat(v);
+  const s = v.trim();
+  if (s.endsWith('%') || s === 'auto') return fallback; // needs a resolved container
+  const n = parseFloat(s);
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -1338,7 +1340,7 @@ export function renderSceneRelations(
     const isArrow = type === 'arrow' || type === 'line';
     const markerEnd = isArrow ? (dash === 'none' ? 'url(#exd-arrowhead)' : 'url(#exd-arrowhead-dashed)') : 'none';
 
-    if (Math.hypot(x2 - x1, y2 - y1) < 1) continue;
+    if (rel.source === rel.target) continue; // skip self-loops
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', edgePath(x1, y1, x2, y2, type));
