@@ -253,6 +253,8 @@ export interface SceneNode {
   encode?: Encoding;
   /** Connection points for edge routing. Omitted = no ports. */
   ports?: Port[];
+  /** Container: lay out children inside this node's bounds (any layout algorithm). */
+  arrangement?: DiagramLayout;
   interaction: NodeInteraction;
   style: NodeStyle;
   children: SceneNode[];
@@ -720,6 +722,12 @@ export interface RendererContext {
   setState: (path: string, value: unknown) => void;
   /** Named visual scales (SceneDocument.scales) for legend/encoding renderers. */
   getScales: () => Map<string, ScaleDef>;
+  /** Lay out a node's children inside a box (node-level containment). */
+  layoutChildren?: (
+    arrangement: DiagramLayout,
+    children: SceneNode[],
+    box: { width: number; height: number },
+  ) => Map<string, { x: number; y: number; width: number; height: number }>;
 }
 
 export type RendererFn = (spec: unknown, ctx: RendererContext) => HTMLElement;

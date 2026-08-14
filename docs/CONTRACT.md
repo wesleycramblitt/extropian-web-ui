@@ -1014,6 +1014,12 @@ Semantics:
   gantt bars with `start_by`/`end_by`). `tree`/`radial` flatten nested
   `children` into absolutely-positioned nodes; the rest lay out the space's
   top-level nodes.
+- `SceneNode.arrangement` turns any node into a **container**: its children are
+  laid out *inside* the node's bounds (using the same `DiagramLayout`) and
+  absolutely positioned. Recursive — a container's children may themselves be
+  containers, so a module can nest submodules with different layouts per level
+  (e.g. a grid of modules, each packing its own files). The container's size
+  comes from `geometry.width`/`height` or the box assigned by its parent layout.
 - **Hover interaction**: hovering a node highlights it, its neighbors, and its
   incident edges (via `data-exd-hovered`).
 

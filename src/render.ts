@@ -465,7 +465,43 @@ function pushAnimation(
 
 // ── SceneNode render dispatcher ─────────────────────────────────────────────
 
-export function renderSceneNode(node: SceneNode, ctx: RendererContext): HTMLElement {
+/**
+ * Render a container node: draw the node's own visual (shallowly), then lay its
+ * children out inside its bounds using `node.arrangement` (any layout algorithm).
+ */
+function renderContainer(node: SceneNode, ctx: RendererContext, box?: { width: number; height: number }): HTMLElement {
+  // Shallow-render the node's own visual (no children, no arrangement → no recursion).
+  const shallow: SceneNode = { ...node, children: [], arrangement: undefined };
+  const el = renderSceneNode(shallow, ctx);
+
+  const g = node.geometry as Record<string, unknown>;
+  const w = box?.width ?? (typeof g.width === 'number' ? g.width : 400);
+  const h = box?.height ?? (typeof g.height === 'number' ? g.height : 300);
+  el.style.position = 'relative';
+  el.style.width = `${w}px`;
+  el.style.height = `${h}px`;
+  el.style.overflow = 'visible';
+
+  if (ctx.layoutChildren && node.arrangement && node.children.length > 0) {
+    const boxes = ctx.layoutChildren(node.arrangement, node.children, { width: w, height: h });
+    for (const child of node.children) {
+      const childBox = boxes.get(child.id);
+      const cel = renderSceneNode(child, ctx, childBox);
+      if (childBox) {
+        cel.style.position = 'absolute';
+        cel.style.left = `${childBox.x}px`;
+        cel.style.top = `${childBox.y}px`;
+        cel.style.width = `${childBox.width}px`;
+        cel.style.height = `${childBox.height}px`;
+        cel.style.boxSizing = 'border-box';
+      }
+      el.appendChild(cel);
+    }
+  }
+  return el;
+}
+
+export function renderSceneNode(node: SceneNode, ctx: RendererContext, box?: { width: number; height: number }): HTMLElement {
   // Check visibility
   if (!node.style.visible) {
     const hidden = document.createElement('div');
@@ -480,6 +516,11 @@ export function renderSceneNode(node: SceneNode, ctx: RendererContext): HTMLElem
       'rendering placeholder until the 3D backend lands.',
     );
     return render3DPlaceholder(node.type);
+  }
+
+  // Container node: lay out children inside this node's bounds (any layout).
+  if (node.arrangement) {
+    return renderContainer(node, ctx, box);
   }
 
   const fn = sceneRendererRegistry.get(node.type);
@@ -1125,8 +1166,9 @@ class ViewImpl implements View {
         } else {
           for (const node of nodes) {
             applyColor(node);
-            const el = renderSceneNode(node, ctx);
-            place(el, boxes.get(node.id));
+            const box = boxes.get(node.id);
+            const el = renderSceneNode(node, ctx, box);
+            place(el, box);
             spaceEl.appendChild(el);
           }
         }
@@ -1292,6 +1334,9 @@ class ViewImpl implements View {
       getState: () => ({ ...self._state, ...self._derived }),
       setState(path: string, value: unknown) { self.setState(path, value); },
       getScales: () => self._scales,
+      layoutChildren(arrangement, children, box) {
+        return computeDiagramLayout(arrangement, children, self._bindingScope(), self._scales, box, self._relations);
+      },
     };
   }
 }
