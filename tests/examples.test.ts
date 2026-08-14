@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, codebaseMapExample, neuralNetExample, champsUiExample, champsUiDeepExample } from '../src/index.js';
+import { render, codebaseMapExample, neuralNetExample, champsUiExample, champsUiDeepExample, cudaExample } from '../src/index.js';
 
 function mount(doc: Parameters<typeof render>[0]) {
   const el = document.createElement('div');
@@ -89,5 +89,29 @@ describe('v1 end-to-end acceptance', () => {
     const ctx = view.getContext();
     expect(ctx.selection).toEqual(['solver-sdf-gen']);
     expect(ctx.entities[0].semantic?.explanation).toContain('Scene tree → SDF');
+  });
+
+  it('renders the CUDA example (nested grid→block→thread + swimlane + memory)', () => {
+    const { el } = mount(cudaExample);
+    // grid (1) + 4 blocks + 128 threads = 133 shapes, plus flow + memory shapes
+    const shapes = el.querySelectorAll('[data-node-type="Shape"]');
+    expect(shapes.length).toBeGreaterThan(133);
+    // 3 flow arrows + 3 memory arrows
+    expect(el.querySelectorAll('[data-rel-id]').length).toBe(6);
+    // summary equation renders as a math node
+    expect(el.querySelector('[data-node-type="Equation"]')).toBeTruthy();
+    // 3 annotations
+    expect(el.querySelectorAll('[data-annotation-id]').length).toBe(3);
+  });
+
+  it('CUDA — threads are nested inside their block, blocks inside the grid', () => {
+    const { view } = mount(cudaExample);
+    const grid = view.find('grid')!;
+    const block = view.find('block-0-0')!;
+    const thread = view.find('t-0-0-0-0')!;
+    expect(grid.contains(block)).toBe(true);
+    expect(block.contains(thread)).toBe(true);
+    expect(thread.style.position).toBe('absolute'); // laid out inside its block
+    expect(view.getContext().entities.length).toBe(0); // nothing selected yet
   });
 });

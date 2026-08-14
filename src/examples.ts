@@ -372,7 +372,7 @@ const DEEP_MODULES: DeepModule[] = [
 const locOf = (m: DeepModule): number => m.cxx + m.h + m.shaders;
 const hdrOf = (m: DeepModule): number => (m.cxx + m.h) > 0 ? Math.round((m.h / (m.cxx + m.h)) * 100) / 100 : 0;
 
-function semanticFor(id: string, role: RoleId, explanation: string, tags?: string[]): NodeSemantic {
+function semanticFor(id: string, role: string, explanation: string, tags?: string[]): NodeSemantic {
   return { role, concept_id: id, kind: 'module', explanation, tags: tags ?? [role] };
 }
 
@@ -493,5 +493,154 @@ export const champsUiDeepExample: SceneDocument = (() => {
     },
     state: {},
     data_sources: { loc, role, hdr },
+  };
+})();
+
+// ── CUDA — how a GPU program executes ───────────────────────────────────────
+//
+// Explains the CUDA programming model in one document: the grid→block→thread
+// hierarchy as nested containers, the host/device data flow as a swimlane, the
+// memory hierarchy as a layered diagram, plus an index formula and summary.
+
+export const cudaExample: SceneDocument = (() => {
+  // ── View 1: execution hierarchy (nested containers) ───────────────────────
+  const threadsOf = (blockId: string, warp: boolean): SceneNode[] => {
+    const ts: SceneNode[] = [];
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 8; c++) {
+        ts.push(n(`t-${blockId}-${r}-${c}`, 'Shape', 'hierarchy', {
+          geometry: { shape: 'Rect', fill: warp ? '#ffd43b' : '#4a9eff' },
+        }));
+      }
+    }
+    return ts;
+  };
+
+  const blocks: SceneNode[] = [];
+  for (let br = 0; br < 2; br++) {
+    for (let bc = 0; bc < 2; bc++) {
+      const id = `${br}-${bc}`;
+      const isWarp = br === 0 && bc === 0;
+      blocks.push(n(`block-${id}`, 'Shape', 'hierarchy', {
+        geometry: { shape: 'RoundedRect' },
+        content: { label: `block (${bc}, ${br})` },
+        semantic: semanticFor(`block-${id}`, 'block', 'A block of 32 threads scheduled on one SM; shares shared memory. blockIdx = this block\'s position in the grid.'),
+        arrangement: { algorithm: 'grid', params: { cols: 8, gap: 2 } },
+        children: threadsOf(id, isWarp),
+      }));
+    }
+  }
+
+  const gridNode = n('grid', 'Shape', 'hierarchy', {
+    geometry: { shape: 'RoundedRect', width: 720, height: 420 },
+    content: { label: 'grid — 2×2 blocks (gridDim)' },
+    semantic: semanticFor('grid', 'grid', 'The whole kernel launch: a grid of blocks. gridDim = 2×2. Each block contains blockDim threads.'),
+    arrangement: { algorithm: 'grid', params: { cols: 2, gap: 12 } },
+    children: blocks,
+  });
+
+  // ── View 2: host ↔ device data flow (swimlane) ────────────────────────────
+  const flowNode = (id: string, label: string, side: string, detail: string): SceneNode =>
+    n(id, 'Shape', 'flow', {
+      geometry: { shape: 'RoundedRect' },
+      content: { label },
+      semantic: semanticFor(id, side, detail),
+      encode: { color: { source: 'side', scale: 'side' } },
+    });
+
+  const flowNodes = [
+    flowNode('f-alloc', 'cudaMalloc', 'host', 'Allocate memory on the device (global memory).'),
+    flowNode('f-memcpy-in', 'cudaMemcpy H→D', 'host', 'Copy input data from host RAM to device global memory.'),
+    flowNode('f-kernel', 'kernel «grid, block»', 'device', 'Launch the kernel: the grid of blocks runs on the GPU.'),
+    flowNode('f-memcpy-out', 'cudaMemcpy D→H', 'host', 'Copy the result back from device to host RAM.'),
+  ];
+
+  const flowRelations: SceneRelation[] = [
+    { id: 'f1', source: 'f-alloc', target: 'f-memcpy-in', style: { type: 'arrow', color: '#4a9eff', width: 1.5, dash: false }, semantic: { kind: 'flows_to' } },
+    { id: 'f2', source: 'f-memcpy-in', target: 'f-kernel', style: { type: 'arrow', color: '#4a9eff', width: 1.5, dash: false }, semantic: { kind: 'flows_to' } },
+    { id: 'f3', source: 'f-kernel', target: 'f-memcpy-out', style: { type: 'arrow', color: '#4a9eff', width: 1.5, dash: false }, semantic: { kind: 'flows_to' } },
+  ];
+
+  // ── View 3: memory hierarchy (layered, color + shape by level) ────────────
+  const memNode = (id: string, label: string, level: string, detail: string): SceneNode =>
+    n(id, 'Shape', 'memory', {
+      content: { label },
+      semantic: semanticFor(id, level, detail),
+      encode: { color: { source: 'level', scale: 'level' }, shape: { source: 'level', scale: 'memShape' } },
+    });
+
+  const memNodes = [
+    memNode('mem-reg', 'registers\nper-thread · fastest', 'registers', 'Per-thread registers — the fastest memory, a few KB per SM, private to each thread.'),
+    memNode('mem-shared', 'shared memory\nper-block · ~48 KB', 'shared', 'Shared memory — per block, used for thread cooperation within a block.'),
+    memNode('mem-l2', 'L2 cache\nper-device', 'l2', 'L2 cache — shared across the whole device, between global memory and the SMs.'),
+    memNode('mem-global', 'global DRAM\nslowest · GBs', 'global', 'Global memory — device DRAM, the largest and slowest level; accessible by all threads.'),
+  ];
+
+  const memRelations: SceneRelation[] = [
+    { id: 'm1', source: 'mem-global', target: 'mem-l2', style: { type: 'arrow', color: '#8080b0', width: 1.5, dash: true }, semantic: { kind: 'hierarchy' } },
+    { id: 'm2', source: 'mem-l2', target: 'mem-shared', style: { type: 'arrow', color: '#8080b0', width: 1.5, dash: true }, semantic: { kind: 'hierarchy' } },
+    { id: 'm3', source: 'mem-shared', target: 'mem-reg', style: { type: 'arrow', color: '#8080b0', width: 1.5, dash: true }, semantic: { kind: 'hierarchy' } },
+  ];
+
+  // ── data_sources ──────────────────────────────────────────────────────────
+  const side: Record<string, string> = {};
+  for (const [id, s] of [['f-alloc', 'host'], ['f-memcpy-in', 'host'], ['f-kernel', 'device'], ['f-memcpy-out', 'host']] as const) side[id] = s;
+  const level: Record<string, string> = { 'mem-reg': 'registers', 'mem-shared': 'shared', 'mem-l2': 'l2', 'mem-global': 'global' };
+
+  return {
+    version: 1,
+    topic: 'How CUDA works',
+    spaces: [
+      { id: 'screen', type: 'screen', projection: 'orthographic', background: '#0a0a1a', scroll: true },
+      {
+        id: 'hierarchy', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '760', height: '460' },
+      },
+      {
+        id: 'flow', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '860', height: '140' },
+        arrangement: { algorithm: 'swimlane', lane_by: { source: 'side' }, params: { node_width: 170, node_height: 44, gap: 20 } },
+      },
+      {
+        id: 'memory', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '820', height: '220' },
+        arrangement: { algorithm: 'layered', params: { rankdir: 'LR', gap: 60, node_width: 150, node_height: 90 } },
+      },
+    ],
+    scales: [
+      { id: 'side', type: 'ordinal', scheme: '', domain: ['host', 'device'], range: ['#1f77b4', '#d62728'] },
+      { id: 'level', type: 'ordinal', scheme: '', domain: ['registers', 'shared', 'l2', 'global'], range: ['#2ca02c', '#1f77b4', '#ff7f0e', '#d62728'] },
+      { id: 'memShape', type: 'ordinal', scheme: '', domain: ['registers', 'shared', 'l2', 'global'], range: ['Circle', 'RoundedRect', 'Hexagon', 'Cylinder'] },
+    ],
+    nodes: [
+      n('title', 'Text', 'screen', { geometry: { variant: 'heading' }, content: { text: 'How CUDA works' } }),
+      n('subtitle', 'Text', 'screen', { content: { text: 'A GPU program launches a kernel as a grid of blocks of threads. Hover or click any node for its explanation.' } }),
+      n('summary', 'Panel', 'screen', {
+        content: { title: 'Key idea' },
+        layout: { strategy: 'column', gap: 8, padding: 12, alignment: 'start' },
+        children: [
+          n('summary-text', 'Text', 'screen', { content: { text: 'Host (CPU) copies data to device (GPU) memory, launches a kernel — a grid of blocks of threads — then copies results back. Threads run in warps of 32 in lockstep (SIMT). The grid/block/thread indices let every thread compute its own data element.' } }),
+          n('index-eq', 'Equation', 'screen', { geometry: { display: true }, content: { source: '\\text{global index} = \\text{blockIdx.x} \\cdot \\text{blockDim.x} + \\text{threadIdx.x}' } }),
+        ],
+      }),
+      n('hdr-hierarchy', 'Text', 'screen', { geometry: { variant: 'label' }, content: { text: 'Execution hierarchy — a grid of blocks, each block a grid of threads' } }),
+      gridNode,
+      ...flowNodes,
+      ...memNodes,
+      n('legend', 'Legend', 'screen', { content: { scale: 'level', title: 'Memory level' } }),
+    ],
+    relations: [...flowRelations, ...memRelations],
+    presentation: {
+      selection: [],
+      overrides: {},
+      annotations: [
+        { id: 'ann-warp', target: 'block-0-0', text: '1 warp = 32 threads in lockstep (SIMT)', position: 'below', style: 'callout' },
+        { id: 'ann-grid', target: 'grid', text: 'gridDim = 2×2 blocks; blockDim = 32 threads', position: 'below', style: 'callout' },
+        { id: 'ann-global', target: 'mem-global', text: 'device DRAM — GBs, slowest', position: 'below', style: 'callout' },
+      ],
+      animations: [],
+    },
+    state: {},
+    data_sources: { side, level },
   };
 })();
