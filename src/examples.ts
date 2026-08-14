@@ -206,3 +206,292 @@ export const champsUiExample: SceneDocument = (() => {
     data_sources: { loc, role },
   };
 })();
+
+// ── CHAMPS UI — deep-dive (stress-test of information density) ──────────────
+//
+// Same codebase, 10× the information: three views (treemap by LOC, layered
+// dependency graph, and a nested 3-level hierarchy tree), four encodings
+// (size, color, shape, opacity), a summary panel with a sortable table,
+// annotations, and rich per-node semantic explanations.
+
+interface Subcomponent {
+  id: string;
+  label: string;
+  desc: string;
+  children?: Subcomponent[];
+}
+
+interface DeepModule {
+  id: string;
+  label: string;
+  role: RoleId;
+  cxx: number;
+  h: number;
+  shaders: number;
+  summary: string;
+  detail: string;
+  abstractions: string;
+  children: Subcomponent[];
+}
+
+const DEEP_MODULES: DeepModule[] = [
+  {
+    id: 'core', label: 'core', role: 'foundation', cxx: 0, h: 249, shaders: 0,
+    summary: 'Header-only foundation · 249 LOC',
+    detail: 'Core types, callback_list, and app_context. An INTERFACE library — headers only, no compilation unit. The single dependency root for every other module.',
+    abstractions: 'callback_list, app_context',
+    children: [
+      { id: 'core-cb', label: 'callback_list', desc: 'Observable callback lists' },
+      { id: 'core-ctx', label: 'app_context', desc: 'Shared application context' },
+    ],
+  },
+  {
+    id: 'gl', label: 'gl', role: 'substrate', cxx: 1271, h: 324, shaders: 0,
+    summary: 'OpenGL wrappers · 1,595 LOC',
+    detail: 'Low-level OpenGL wrappers: shader program management and GPU mesh upload. Depends on cui_core, Eigen3, and Qt6::OpenGL.',
+    abstractions: 'shader program, gpu mesh',
+    children: [
+      { id: 'gl-sh', label: 'shader_program', desc: 'Shader compile/link' },
+      { id: 'gl-mesh', label: 'gpu_mesh', desc: 'VBO/VAO upload' },
+    ],
+  },
+  {
+    id: 'scene', label: 'scene', role: 'substrate', cxx: 290, h: 286, shaders: 0,
+    summary: 'Scene graph data · 576 LOC',
+    detail: 'CPU-side mesh data, shape primitives, and a VTK loader. The shared data model between state and viewport.',
+    abstractions: 'shape::packet, mesh data',
+    children: [
+      { id: 'scene-shape', label: 'shape', desc: 'shape::packet type-erased shapes' },
+      { id: 'scene-vtk', label: 'vtk_loader', desc: 'VTK mesh import' },
+    ],
+  },
+  {
+    id: 'ipc', label: 'ipc', role: 'substrate', cxx: 285, h: 256, shaders: 0,
+    summary: 'File IPC · 541 LOC',
+    detail: 'File-based inter-process communication channel that polls the solver run directory. Uses fmt + spdlog.',
+    abstractions: 'file_ipc_channel',
+    children: [
+      { id: 'ipc-file', label: 'file_ipc_channel', desc: 'Poll run directory for messages' },
+    ],
+  },
+  {
+    id: 'solver', label: 'solver', role: 'services', cxx: 1443, h: 1983, shaders: 0,
+    summary: 'Solver client · 3,426 LOC',
+    detail: 'Qt-free solver process management: SDF generation and rendering, with local and SSH process transports.',
+    abstractions: 'sdf_generator, local/ssh transport',
+    children: [
+      {
+        id: 'solver-sdf', label: 'sdf', desc: 'SDF format, generator, renderer',
+        children: [
+          { id: 'solver-sdf-fmt', label: 'sdf_fmt', desc: 'SDF format helpers' },
+          { id: 'solver-sdf-gen', label: 'sdf_generator', desc: 'Scene tree → SDF' },
+          { id: 'solver-sdf-render', label: 'sdf_renderer', desc: 'SDF → geometry' },
+        ],
+      },
+      {
+        id: 'solver-transport', label: 'transport', desc: 'Process transports',
+        children: [
+          { id: 'solver-local', label: 'local_process', desc: 'Local process transport' },
+          { id: 'solver-ssh', label: 'ssh_process', desc: 'SSH remote transport' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'state', label: 'state', role: 'services', cxx: 4160, h: 2944, shaders: 0,
+    summary: 'App state · 7,104 LOC',
+    detail: 'The application state layer: a flat scene tree with a node-type registry, pluggable Inode_type_handler, an undoable Icommand system, and an async command_bus.',
+    abstractions: 'scene_tree, Icommand, command_bus, Inode_type_handler',
+    children: [
+      { id: 'state-tree', label: 'scene_tree', desc: 'Flat node list + registry' },
+      { id: 'state-node', label: 'scene_node', desc: 'Node + type schema' },
+      { id: 'state-cmd', label: 'commands', desc: 'Undoable Icommand set' },
+      { id: 'state-nt', label: 'node_types', desc: 'Concrete node defs + handlers' },
+    ],
+  },
+  {
+    id: 'viewport', label: 'viewport', role: 'ui', cxx: 5452, h: 1902, shaders: 131,
+    summary: '3D viewport · 7,485 LOC + 131 shader lines',
+    detail: 'The 3D viewport: a 7-pass render pipeline, GPU triangle picking, an orbit camera, and 9 interactive gizmos. Owns 11 GLSL shaders.',
+    abstractions: 'Igizmo, scene_manager, pick_system, orbit_camera',
+    children: [
+      {
+        id: 'vp-render', label: 'renderers', desc: '7 render passes',
+        children: [
+          { id: 'vp-bg', label: 'background_renderer', desc: 'Gradient pass' },
+          { id: 'vp-scene', label: 'scene_renderer', desc: 'SSBO mesh pass' },
+          { id: 'vp-shape', label: 'shape_drawer', desc: 'Node shapes + hover' },
+          { id: 'vp-toggle', label: 'display_toggle_renderer', desc: 'Wireframe/grid/axes' },
+        ],
+      },
+      {
+        id: 'vp-gizmo', label: 'gizmos', desc: '9 interactive manipulators',
+        children: [
+          { id: 'vp-axis', label: 'axis_gizmo', desc: 'Translate axis' },
+          { id: 'vp-scale', label: 'scale_gizmo', desc: 'Uniform scale' },
+          { id: 'vp-ring', label: 'rotation_ring_gizmo', desc: 'Rotate ring' },
+          { id: 'vp-bbox', label: 'bounding_box_gizmo', desc: 'Selection box' },
+        ],
+      },
+      { id: 'vp-cam', label: 'orbit_camera', desc: 'Azimuth/elevation camera' },
+      { id: 'vp-pick', label: 'pick_system', desc: 'GPU triangle picking' },
+      { id: 'vp-mgr', label: 'scene_manager', desc: 'CPU/GPU mesh cache' },
+    ],
+  },
+  {
+    id: 'gui', label: 'gui', role: 'ui', cxx: 4869, h: 1569, shaders: 0,
+    summary: 'Qt6 widgets · 6,438 LOC',
+    detail: 'The Qt6 UI: main window, docked panels, dialogs, MVC controllers (tree, viewport, solver, console, script, menu), a QSS stylesheet pipeline, and custom widgets.',
+    abstractions: 'controllers, panels, widgets, style',
+    children: [
+      {
+        id: 'gui-ctrl', label: 'controllers', desc: 'MVC controllers',
+        children: [
+          { id: 'gui-tree', label: 'tree', desc: 'Scene tree controller' },
+          { id: 'gui-vp', label: 'viewport', desc: 'Viewport controller' },
+          { id: 'gui-solver', label: 'solver', desc: 'Solver run controller' },
+          { id: 'gui-console', label: 'console_log', desc: 'Log panel controller' },
+        ],
+      },
+      { id: 'gui-panels', label: 'panels', desc: 'Docked panel sections' },
+      { id: 'gui-widgets', label: 'widgets', desc: 'Custom widgets' },
+      { id: 'gui-style', label: 'style', desc: 'QSS pipeline + palette' },
+    ],
+  },
+  {
+    id: 'app', label: 'Champs_UI', role: 'entry', cxx: 94, h: 0, shaders: 0,
+    summary: 'Entry point · 94 LOC',
+    detail: 'The executable entry point — registers everything and starts the Qt event loop.',
+    abstractions: 'main',
+    children: [
+      { id: 'app-main', label: 'main.cxx', desc: 'Registers types + starts app' },
+    ],
+  },
+];
+
+const locOf = (m: DeepModule): number => m.cxx + m.h + m.shaders;
+const hdrOf = (m: DeepModule): number => (m.cxx + m.h) > 0 ? Math.round((m.h / (m.cxx + m.h)) * 100) / 100 : 0;
+
+function semanticFor(id: string, role: RoleId, explanation: string, tags?: string[]): NodeSemantic {
+  return { role, concept_id: id, kind: 'module', explanation, tags: tags ?? [role] };
+}
+
+export const champsUiDeepExample: SceneDocument = (() => {
+  // View 1 — treemap: area = LOC, color = role, opacity = header ratio
+  const treemapNodes = DEEP_MODULES.map(m => n(m.id, 'Shape', 'modules', {
+    geometry: { shape: 'Rect' },
+    content: { label: m.label },
+    semantic: semanticFor(m.id, m.role, `${m.summary}. ${m.detail} (${m.abstractions})`),
+    encode: { color: { source: 'role', scale: 'role' }, opacity: { source: 'hdr', scale: 'hdr' } },
+  }));
+
+  // View 2 — layered dependency graph: shape = role, color = role
+  const depNodes = DEEP_MODULES.map(m => n(`${m.id}_dep`, 'Shape', 'deps', {
+    content: { label: m.label },
+    semantic: semanticFor(m.id, m.role, `${m.summary}. ${m.detail}`),
+    encode: { color: { source: 'role', scale: 'role' }, shape: { source: 'role', scale: 'shape' } },
+  }));
+
+  const relations: SceneRelation[] = CHAMPS_DEPENDENCIES.map(([dep, use]) => ({
+    id: `${dep}->${use}`,
+    source: `${dep}_dep`,
+    target: `${use}_dep`,
+    style: { type: 'arrow', color: '#4a9eff', width: 1.5, dash: false },
+    semantic: { kind: 'dependency' },
+  }));
+
+  // View 3 — hierarchy tree: nested module → subcomponent → leaf
+  function buildSubNode(c: Subcomponent, role: RoleId): SceneNode {
+    return n(c.id, 'Shape', 'hierarchy', {
+      geometry: { shape: c.children?.length ? 'Rect' : 'Circle' },
+      content: { label: c.label },
+      semantic: semanticFor(c.id, role, c.desc),
+      encode: { color: { source: 'role', scale: 'role' } },
+      children: (c.children ?? []).map(g => buildSubNode(g, role)),
+    });
+  }
+  const hierarchyNodes = DEEP_MODULES.map(m => n(`${m.id}_t`, 'Shape', 'hierarchy', {
+    geometry: { shape: 'RoundedRect' },
+    content: { label: m.label },
+    semantic: semanticFor(m.id, m.role, m.detail),
+    encode: { color: { source: 'role', scale: 'role' } },
+    children: (m.children ?? []).map(c => buildSubNode(c, m.role)),
+  }));
+
+  // Summary table (sortable + striped)
+  const tableRows = DEEP_MODULES.map(m => [m.label, String(locOf(m)), m.role, `${Math.round(hdrOf(m) * 100)}%`]);
+
+  // data_sources: role for every node id; loc + hdr for module ids
+  const role: Record<string, string> = {};
+  const loc: Record<string, number> = {};
+  const hdr: Record<string, number> = {};
+  for (const m of DEEP_MODULES) {
+    for (const suffix of ['', '_dep', '_t']) role[m.id + suffix] = m.role;
+    loc[m.id] = locOf(m);
+    loc[`${m.id}_dep`] = locOf(m);
+    hdr[m.id] = hdrOf(m);
+    const walk = (subs: Subcomponent[]): void => { for (const s of subs) { role[s.id] = m.role; walk(s.children ?? []); } };
+    walk(m.children);
+  }
+
+  return {
+    version: 1,
+    topic: 'CHAMPS UI — deep-dive',
+    spaces: [
+      { id: 'screen', type: 'screen', projection: 'orthographic', background: '#0a0a1a', scroll: true },
+      {
+        id: 'modules', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '900', height: '480' },
+        arrangement: { algorithm: 'treemap', size_by: { source: 'loc' }, params: { padding: 4 } },
+      },
+      {
+        id: 'deps', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '900', height: '520' },
+        arrangement: { algorithm: 'layered', params: { rankdir: 'LR', gap: 40, node_width: 120, node_height: 48 } },
+      },
+      {
+        id: 'hierarchy', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '1100', height: '720' },
+        arrangement: { algorithm: 'tree', params: { orientation: 'vertical', node_width: 130, node_height: 40 } },
+      },
+    ],
+    scales: [
+      { id: 'role', type: 'ordinal', scheme: '', domain: ['foundation', 'substrate', 'services', 'ui', 'entry'], range: ['#8c8c9a', '#2ca02c', '#ff7f0e', '#1f77b4', '#d62728'] },
+      { id: 'shape', type: 'ordinal', scheme: '', domain: ['foundation', 'substrate', 'services', 'ui', 'entry'], range: ['Rect', 'Hexagon', 'Cylinder', 'RoundedRect', 'Diamond'] },
+      { id: 'hdr', type: 'linear', scheme: '', domain: [0, 1], range: [0.3, 1] },
+    ],
+    nodes: [
+      n('title', 'Text', 'screen', { geometry: { variant: 'heading' }, content: { text: 'CHAMPS UI — deep-dive (3 views, 4 encodings)' } }),
+      n('subtitle', 'Text', 'screen', { content: { text: 'Treemap: area = LOC, color = role, opacity = header ratio. Layered graph: shape + color = role. Tree: nested module → subcomponent → file. Hover or click any node for its full description.' } }),
+      // Summary panel: prose + sortable table
+      n('summary', 'Panel', 'screen', {
+        content: { title: 'Module summary' },
+        layout: { strategy: 'column', gap: 8, padding: 12, alignment: 'start' },
+        children: [
+          n('summary-text', 'Text', 'screen', { content: { text: '9 modules · ~27.5k LOC C++20 · 131 GLSL shader lines. Largest: viewport (7,485), state (7,104), gui (6,438). Header ratio: core 100% (header-only) → app 0%.' } }),
+          n('summary-table', 'Table', 'screen', {
+            geometry: { sortable: true, striped: true, maxHeight: 280 },
+            content: { columns: ['module', 'LOC', 'role', 'header %'], rows: tableRows },
+          }),
+        ],
+      }),
+      ...treemapNodes,
+      ...depNodes,
+      ...hierarchyNodes,
+      n('legend', 'Legend', 'screen', { content: { scale: 'role', title: 'Module role' } }),
+    ],
+    relations,
+    presentation: {
+      selection: [],
+      overrides: {},
+      annotations: [
+        { id: 'ann-vp', target: 'viewport', text: '7 render passes · 9 gizmos · 11 shaders', position: 'below', style: 'callout' },
+        { id: 'ann-state', target: 'state', text: 'undoable Icommand + async command_bus', position: 'below', style: 'callout' },
+        { id: 'ann-solver', target: 'solver', text: 'SSH + local process transport', position: 'below', style: 'callout' },
+      ],
+      animations: [],
+    },
+    state: {},
+    data_sources: { loc, role, hdr },
+  };
+})();

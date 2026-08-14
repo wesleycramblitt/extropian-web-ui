@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, codebaseMapExample, neuralNetExample, champsUiExample } from '../src/index.js';
+import { render, codebaseMapExample, neuralNetExample, champsUiExample, champsUiDeepExample } from '../src/index.js';
 
 function mount(doc: Parameters<typeof render>[0]) {
   const el = document.createElement('div');
@@ -68,5 +68,26 @@ describe('v1 end-to-end acceptance', () => {
     expect(ctx.entities[0].semantic?.explanation).toContain('7 render passes');
     // relations touching viewport_dep: incoming (gl→viewport, scene→viewport, core→viewport) + outgoing (viewport→state, viewport→gui, viewport→app)
     expect(ctx.relations.length).toBe(6);
+  });
+
+  it('renders the CHAMPS UI deep-dive (treemap + layered + nested tree + annotations)', () => {
+    const { el } = mount(champsUiDeepExample);
+    // 9 treemap + 9 layered + 9 root tree modules + subcomponents (tree nodes)
+    const shapes = el.querySelectorAll('[data-node-type="Shape"]');
+    expect(shapes.length).toBeGreaterThan(40); // hierarchy is the bulk
+    expect(el.querySelectorAll('[data-rel-id]').length).toBe(22);
+    expect(el.querySelectorAll('.exd-legend-swatch').length).toBe(5);
+    // summary panel table renders
+    expect(el.querySelectorAll('.exd-table tbody tr').length).toBe(9);
+    // annotations overlaid
+    expect(el.querySelectorAll('[data-annotation-id]').length).toBe(3);
+  });
+
+  it('deep-dive — hierarchy sub-nodes expose semantic context too', () => {
+    const { view } = mount(champsUiDeepExample);
+    view.find('solver-sdf-gen')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const ctx = view.getContext();
+    expect(ctx.selection).toEqual(['solver-sdf-gen']);
+    expect(ctx.entities[0].semantic?.explanation).toContain('Scene tree → SDF');
   });
 });
