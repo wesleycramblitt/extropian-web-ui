@@ -1,7 +1,7 @@
 // Example SceneDocuments demonstrating the diagram vocabulary (shapes, edges,
 // encoding, layout, legend). These are reference fixtures for the v1 prototype
 // and hand-authored examples of the compiler's output shape.
-import type { SceneDocument, SceneNode, NodeType, NodeInteraction, NodeStyle } from './types.js';
+import type { SceneDocument, SceneNode, NodeType, NodeInteraction, NodeStyle, NodeSemantic, SceneRelation } from './types.js';
 
 const INTERACTION: NodeInteraction = { hover: true, select: true, drag: false, focus: true, inspect: true, edit: false };
 const STYLE: NodeStyle = { emphasis: 'default', opacity: 1, depth: 0, visible: true };
@@ -92,3 +92,117 @@ export const neuralNetExample: SceneDocument = {
   state: {},
   data_sources: {},
 };
+
+// ── CHAMPS UI — codebase overview ───────────────────────────────────────────
+
+type RoleId = 'foundation' | 'substrate' | 'services' | 'ui' | 'entry';
+
+interface ModuleInfo {
+  id: string;
+  label: string;
+  role: RoleId;
+  loc: number;
+  desc: string;
+}
+
+const CHAMPS_MODULES: ModuleInfo[] = [
+  { id: 'core', label: 'core', role: 'foundation', loc: 249, desc: 'Foundation — callbacks, app context, core types (header-only interface library).' },
+  { id: 'gl', label: 'gl', role: 'substrate', loc: 1595, desc: 'OpenGL wrappers — shader programs and GPU mesh upload (1,595 LOC).' },
+  { id: 'scene', label: 'scene', role: 'substrate', loc: 576, desc: 'CPU-side mesh data, shape primitives, VTK loader (576 LOC).' },
+  { id: 'ipc', label: 'ipc', role: 'substrate', loc: 541, desc: 'File-based inter-process communication channel (541 LOC).' },
+  { id: 'solver', label: 'solver', role: 'services', loc: 3426, desc: 'Solver process management + SDF generation, Qt-free (3,426 LOC).' },
+  { id: 'state', label: 'state', role: 'services', loc: 7104, desc: 'Application state — scene tree, undoable commands, node-type handlers (7,104 LOC).' },
+  { id: 'viewport', label: 'viewport', role: 'ui', loc: 7485, desc: '3D viewport — 7 render passes, GPU picking, 9 gizmos (7,485 LOC).' },
+  { id: 'gui', label: 'gui', role: 'ui', loc: 6438, desc: 'Qt6 widgets — main window, panels, controllers, styles (6,438 LOC).' },
+  { id: 'app', label: 'Champs_UI', role: 'entry', loc: 94, desc: 'Executable entry point — registers everything (94 LOC).' },
+];
+
+// dependency → dependant ("core is a dependency of gl") — reads foundation → app left-to-right
+const CHAMPS_DEPENDENCIES: [string, string][] = [
+  ['core', 'gl'], ['core', 'scene'], ['core', 'ipc'],
+  ['core', 'solver'], ['core', 'viewport'], ['core', 'state'],
+  ['core', 'gui'], ['core', 'app'],
+  ['ipc', 'solver'],
+  ['gl', 'viewport'], ['scene', 'viewport'],
+  ['solver', 'state'], ['scene', 'state'], ['viewport', 'state'], ['ipc', 'state'],
+  ['state', 'gui'], ['viewport', 'gui'],
+  ['gui', 'app'], ['state', 'app'], ['viewport', 'app'], ['ipc', 'app'], ['solver', 'app'],
+];
+
+function moduleSemantic(m: ModuleInfo): NodeSemantic {
+  return { role: m.role, concept_id: m.id, kind: 'module', explanation: m.desc, tags: [m.role] };
+}
+
+/**
+ * CHAMPS UI — a whole codebase in one document. Two views of the same data:
+ *   · a treemap where area = lines of code and color = role (module size),
+ *   · a layered dependency graph where shape + color = role (architecture).
+ * Demonstrates size/color/shape/label encodings, treemap + layered layouts,
+ * relations, a shared ordinal scale + legend, and semantic context per module.
+ */
+export const champsUiExample: SceneDocument = (() => {
+  const treemapNodes = CHAMPS_MODULES.map(m => n(m.id, 'Shape', 'modules', {
+    geometry: { shape: 'Rect' },
+    content: { label: m.label },
+    semantic: moduleSemantic(m),
+    encode: { color: { source: 'role', scale: 'role' } },
+  }));
+
+  const depNodes = CHAMPS_MODULES.map(m => n(`${m.id}_dep`, 'Shape', 'deps', {
+    content: { label: m.label },
+    semantic: moduleSemantic(m),
+    encode: {
+      color: { source: 'role', scale: 'role' },
+      shape: { source: 'role', scale: 'shape' },
+    },
+  }));
+
+  const relations: SceneRelation[] = CHAMPS_DEPENDENCIES.map(([dep, use]) => ({
+    id: `${dep}->${use}`,
+    source: `${dep}_dep`,
+    target: `${use}_dep`,
+    style: { type: 'arrow', color: '#4a9eff', width: 1.5, dash: false },
+    semantic: { kind: 'dependency' },
+  }));
+
+  const loc: Record<string, number> = {};
+  const role: Record<string, string> = {};
+  for (const m of CHAMPS_MODULES) {
+    for (const suffix of ['', '_dep']) {
+      loc[m.id + suffix] = m.loc;
+      role[m.id + suffix] = m.role;
+    }
+  }
+
+  return {
+    version: 1,
+    topic: 'CHAMPS UI — codebase overview',
+    spaces: [
+      { id: 'screen', type: 'screen', projection: 'orthographic', background: '#0a0a1a', scroll: true },
+      {
+        id: 'modules', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '900', height: '480' },
+        arrangement: { algorithm: 'treemap', size_by: { source: 'loc' }, params: { padding: 4 } },
+      },
+      {
+        id: 'deps', type: 'cartesian2d', projection: 'orthographic', background: '#0e0e2a', scroll: false,
+        layout: { x: '0', y: '0', width: '900', height: '520' },
+        arrangement: { algorithm: 'layered', params: { rankdir: 'LR', gap: 40, node_width: 120, node_height: 48 } },
+      },
+    ],
+    scales: [
+      { id: 'role', type: 'ordinal', scheme: '', domain: ['foundation', 'substrate', 'services', 'ui', 'entry'], range: ['#8c8c9a', '#2ca02c', '#ff7f0e', '#1f77b4', '#d62728'] },
+      { id: 'shape', type: 'ordinal', scheme: '', domain: ['foundation', 'substrate', 'services', 'ui', 'entry'], range: ['Rect', 'Hexagon', 'Cylinder', 'RoundedRect', 'Diamond'] },
+    ],
+    nodes: [
+      n('title', 'Text', 'screen', { geometry: { variant: 'heading' }, content: { text: 'CHAMPS UI — hypersonic CFD frontend' } }),
+      n('subtitle', 'Text', 'screen', { content: { text: 'Cross-platform Qt6 · C++20 · OpenGL 4.3+ · Eigen3 — 9 modules, ~27.5k LOC, 11 GLSL shaders, 7 render passes.' } }),
+      ...treemapNodes,
+      ...depNodes,
+      n('legend', 'Legend', 'screen', { content: { scale: 'role', title: 'Module role' } }),
+    ],
+    relations,
+    state: {},
+    data_sources: { loc, role },
+  };
+})();

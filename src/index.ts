@@ -9,7 +9,7 @@ export { convertVisualDocToSceneDocument } from './convertVisualDocToSceneDocume
 export { computeDiagramLayout } from './diagramLayout.js';
 export { createScale, applyEncoding, resolveChannel, lookupPath, resolveChannelValue, SCHEMES } from './scale.js';
 export type { LayoutBox } from './diagramLayout.js';
-export { codebaseMapExample, neuralNetExample } from './examples.js';
+export { codebaseMapExample, neuralNetExample, champsUiExample } from './examples.js';
 
 // ── SceneDocument types (v1.0) ──────────────────────────────────────────────
 export type {
