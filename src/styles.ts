@@ -61,6 +61,9 @@ const CSS = `
   .exd-table th { background: #16213e; color: #8080b0; font-weight: 600; padding: 8px 12px; text-align: left; border-bottom: 2px solid #2a2a4a; }
   .exd-table td { padding: 6px 12px; border-bottom: 1px solid #1a1a3e; color: #d0d0d0; }
   .exd-table tr:hover td { background: #1e1e3a; }
+  .exd-table-striped tbody tr:nth-child(even) td { background: #1a1a2e; }
+  .exd-table-filter { background: #0e0e2a; border: 1px solid #2a2a4a; border-radius: 4px; padding: 5px 10px; color: #e0e0e0; font-size: 12px; margin-bottom: 6px; width: 100%; box-sizing: border-box; font-family: inherit; }
+  .exd-table-filter:focus { outline: none; border-color: #4a9eff; }
 
   .exd-graph { width: 100%; min-height: 300px; overflow: hidden; }
   .exd-graph svg { width: 100%; height: 100%; }

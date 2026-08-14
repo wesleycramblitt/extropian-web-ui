@@ -524,6 +524,10 @@ export interface Table extends NodeBase {
   kind: 'table';
   columns?: string[];
   rows: (string | number)[][];
+  sortable?: boolean;
+  filterable?: boolean;
+  striped?: boolean;
+  maxHeight?: number;
 }
 
 /** @deprecated Use {@link SceneNode} with type 'Graph'. */

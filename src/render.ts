@@ -52,7 +52,7 @@ registerRenderer('button', renderButton as RendererFn);
 registerRenderer('view_ref', renderViewRef as RendererFn);
 
 // SceneNode type renderers — maps NodeType to component
-import type { Panel, Text, Math, Chart, Matrix, Table, Graph, Form, Button } from './types.js';
+import type { Panel, Text, Math, Chart, Matrix, Table, Graph, Form, Button, Series } from './types.js';
 
 // ── SceneNode renderer registry ─────────────────────────────────────────────
 
@@ -71,13 +71,30 @@ function registerSceneRenderer(
 registerSceneRenderer('Panel', (node, ctx) => {
   const layoutHint = node.layout;
   const strategy = layoutHint?.strategy ?? 'column';
+  const g = node.geometry as Record<string, unknown>;
   const el = document.createElement('div');
   el.className = `exd-panel exd-panel-${strategy === 'grid' ? 'grid' : strategy === 'row' ? 'row' : 'column'}`;
   if (strategy === 'grid') {
-    const cols = Number((node.geometry as Record<string, unknown>).cols ?? 2);
+    const cols = Number(g.cols ?? 2);
     el.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     el.style.display = 'grid';
   }
+  // Geometry skin (width/height/cornerRadius/background/border/shadow/scroll)
+  const dim = (v: unknown): string | undefined => typeof v === 'number' ? `${v}px` : typeof v === 'string' ? v : undefined;
+  const w = dim(g.width), h = dim(g.height);
+  if (w) el.style.width = w;
+  if (h) el.style.height = h;
+  if (typeof g.minWidth === 'number') el.style.minWidth = `${g.minWidth}px`;
+  if (typeof g.maxWidth === 'number') el.style.maxWidth = `${g.maxWidth}px`;
+  if (typeof g.cornerRadius === 'number') el.style.borderRadius = `${g.cornerRadius}px`;
+  if (typeof g.background === 'string') el.style.background = g.background;
+  if (typeof g.border === 'string') el.style.border = g.border;
+  if (typeof g.shadow === 'string') el.style.boxShadow = g.shadow;
+  if (g.scroll === true) el.style.overflow = 'auto';
+  // Layout hint gap/padding
+  if (layoutHint?.gap !== undefined) el.style.gap = `${layoutHint.gap}px`;
+  if (layoutHint?.padding !== undefined) el.style.padding = `${layoutHint.padding}px`;
+
   const title = String((node.content as Record<string, unknown>).title ?? '');
   if (title) {
     const t = document.createElement('div');
@@ -141,9 +158,13 @@ registerSceneRenderer('Plot', (node, ctx) => {
     type: (geometry.chartType as Chart['type']) ?? 'line',
     series: series.map(s => ({
       name: String(s.name ?? ''),
+      x: s.x as number[] | undefined,
       y: (s.data ?? []) as number[],
+      type: s.type as Series['type'] | undefined,
       color: String(s.color ?? ''),
     })),
+    matrix: (content.matrix ?? geometry.matrix) as number[][] | undefined,
+    x: (content.x ?? geometry.x) as (string | number)[] | undefined,
     title: String(content.title ?? ''),
     xLabel: (geometry.xAxis as Record<string, string>)?.label ?? '',
     yLabel: (geometry.yAxis as Record<string, string>)?.label ?? '',
@@ -171,11 +192,16 @@ registerSceneRenderer('Matrix', (node, ctx) => {
 
 registerSceneRenderer('Table', (node, ctx) => {
   const content = node.content as Record<string, unknown>;
+  const geometry = node.geometry as Record<string, unknown>;
   const spec: Table = {
     kind: 'table',
     id: node.id,
     columns: content.columns as string[] | undefined,
     rows: (content.rows ?? []) as (string | number)[][],
+    sortable: geometry.sortable as boolean | undefined,
+    filterable: geometry.filterable as boolean | undefined,
+    striped: geometry.striped as boolean | undefined,
+    maxHeight: geometry.maxHeight as number | undefined,
     semantic: convertNodeSemanticToSemantic(node.semantic),
     interaction: interactionToLegacy(node.interaction),
   };
